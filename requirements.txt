@@ -1,0 +1,14 @@
+# QRes Platform — Python dependencies (Python 3.9–3.12 recommended)
+# Install with:  pip install -r requirements.txt
+
+PyQt5>=5.15            # GUI toolkit
+pyqtgraph>=0.13        # embedded interactive plots (hover / click / regions)
+qcodes>=0.40           # instrument framework + database
+qcodes_contrib_drivers>=0.18   # Oxford Proteox / DECS-VISA tooling
+numpy>=1.23
+scipy>=1.9             # circle fit (circuit.py)
+matplotlib>=3.5         # imported by the Probst utilities module
+
+# Required because the supplied MercuryITC.py imports these at module load:
+ipywidgets>=8.0
+ipython>=8.0
