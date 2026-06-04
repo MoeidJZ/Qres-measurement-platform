@@ -21,7 +21,6 @@ QRes Platform combines instrument control, a step-by-step measurement workflow, 
 - [Configuration & settings](#configuration--settings)
 - [Tips & troubleshooting](#tips--troubleshooting)
 - [Acknowledgements](#acknowledgements)
-- [License](#license)
 
 ---
 
