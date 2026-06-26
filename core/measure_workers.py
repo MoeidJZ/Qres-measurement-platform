@@ -512,12 +512,13 @@ def measure_resonator_hpd(im, r, schedule, sched_map, points, trace, reject, tag
                  f"{orig_f0/1e9:.6f}to{orig_f1/1e9:.6f}GHz")
     meas = Measurement(exp=exp, station=im.station, name=meas_name)
     meas.register_custom_parameter("power", unit="dBm")
+    meas.register_custom_parameter("point", paramtype="array")
     meas.register_custom_parameter("frequency", unit="Hz", paramtype="array",
-                                   setpoints=("power",))
+                                   setpoints=("power", "point"))
     meas.register_custom_parameter("mag", unit="dB", paramtype="array",
-                                   setpoints=("power", "frequency"))
+                                   setpoints=("power", "point"))
     meas.register_custom_parameter("phase", unit="deg", paramtype="array",
-                                   setpoints=("power", "frequency"))
+                                   setpoints=("power", "point"))
     meas.write_period = 2
 
     def _window_hz():
@@ -553,8 +554,9 @@ def measure_resonator_hpd(im, r, schedule, sched_map, points, trace, reject, tag
             if freq.size != mag.size:
                 freq = np.linspace(f0, f1, mag.size)
 
-            ds.add_result(("power", float(pw)), ("frequency", freq),
-                          ("mag", mag), ("phase", phase))
+            idx = np.arange(mag.size, dtype=float)
+            ds.add_result(("power", float(pw)), ("point", idx),
+                          ("frequency", freq), ("mag", mag), ("phase", phase))
 
             fit = fit_notch(freq, s21_from_mag_phase(mag, phase))
             reused = False

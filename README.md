@@ -116,7 +116,7 @@ Measure and circle-fit each resonator individually, with a clear per-resonator s
 Sweep each confirmed resonator over a range of powers and watch the internal quality factor evolve. Two acquisition strategies are available:
 
 - **SPD (Standard Power Dependence)** — powers low → high, all stored in a **single run** sharing one frequency axis.
-- **HPD (High-resolution Power Dependence)** — powers high → low using an **adaptive narrow linear sweep**. At each power the window auto-shrinks to a few linewidths around the resonance (clamped between 5 % and 100 % of the original span), concentrating your points exactly where they matter as the resonance sharpens at low power. The resonance is re-centred from each fit; a Qi jump beyond a configurable factor reuses the previous seed. All powers are stored in a **single run**.
+- **HPD (High-resolution Power Dependence)** — powers high → low using an **adaptive narrow linear sweep**. At each power the window auto-shrinks to a few linewidths around the resonance (clamped between 5 % and 100 % of the original span), concentrating your points exactly where they matter as the resonance sharpens at low power (following the point-redistribution idea of ref. [3]). The resonance is re-centred from each fit; a Qi jump beyond a configurable factor reuses the previous seed. All powers are stored in a **single run**.
 
 Both modes provide:
 
@@ -157,7 +157,7 @@ Open the analysis window on **any** `.db` file — data taken with this platform
 
 ### Circle fit (notch port)
 
-QRes Platform uses the full **Probst `resonator_tools` circle-fit** library (bundled with the project) in its notch-port configuration. For each resonance it reports:
+QRes Platform uses the full **Probst `resonator_tools` circle-fit** library (bundled with the project) in its notch-port configuration, implementing the diameter-correction method [1, 2]. For each resonance it reports:
 
 - **`fr`** — resonance frequency
 - **`Qi`** (diameter-corrected internal quality factor, `Qi_dia_corr`)
@@ -178,7 +178,7 @@ k_i = 2π·fr / Qi      (internal loss rate)
 n̄   = 4·k_c / ( 2π·ħ·fr·(k_c + k_i)² ) · P_chip
 ```
 
-following the standard expression for a notch-coupled resonator (see, e.g., Baity *et al.*, *Phys. Rev. Research* **6**, 013329, 2024).
+following the standard expression for a notch-coupled resonator (see ref. [3]).
 
 ---
 
@@ -317,9 +317,17 @@ The welcome screen lets you pick a fridge type and start the guided workflow, or
 
 ## Acknowledgements
 
-- Circle-fit analysis is built on the **`resonator_tools`** library by S. Probst *et al.* (notch-port fitting and diameter correction).
+- **Circle-fit analysis** is built on the **`resonator_tools`** notch-port fitter by S. Probst *et al.*, which implements the diameter-correction method (DCM) for separating internal and coupling quality factors. See refs. [1] (algebraic circle fit) and [2] (diameter-correction method).
+- The **HPD (high-resolution power dependence)** acquisition mode — concentrating measurement points around the resonance so the fit stays accurate as the linewidth narrows at low power — follows the point-redistribution approach of Baity *et al.* [3], which also sets out the photon-number convention used here.
 - Instrument control is built on **[QCoDeS](https://qcodes.github.io/Qcodes/)** and **qcodes_contrib_drivers**.
-- Photon-number conventions follow standard notch-resonator treatments (e.g. Baity *et al.*, *Phys. Rev. Research* **6**, 013329, 2024).
+
+## References
+
+1. S. Probst, F. B. Song, P. A. Bushev, A. V. Ustinov, and M. Weides, "Efficient and robust analysis of complex scattering data under noise in microwave resonators," *Review of Scientific Instruments* **86**, 024706 (2015). https://doi.org/10.1063/1.4907935
+
+2. M. S. Khalil, M. J. A. Stoutimore, F. C. Wellstood, and K. D. Osborn, "An analysis method for asymmetric resonator transmission applied to superconducting devices," *Journal of Applied Physics* **111**, 054510 (2012). https://doi.org/10.1063/1.3692073
+
+3. P. G. Baity, C. Maclean, V. Seferai, J. Bronstein, Y. Shu, T. Hemakumara, and M. Weides, "Circle fit optimization for resonator quality factor measurements: Point redistribution for maximal accuracy," *Physical Review Research* **6**, 013329 (2024). https://doi.org/10.1103/PhysRevResearch.6.013329
 
 ---
 

@@ -110,22 +110,40 @@ def load_run(db_path: str, run_id: int) -> Dict:
                 "mag": np.asarray(mag, float),
                 "phase": np.asarray(phase, float), "run_id": run_id}
 
-    # ---- HPD / custom layout (frequency may vary per power) --------
+    # ---- HPD / custom layout (frequency stored per power) ----------
     if "mag" in pdata:
-        block = pdata["mag"]
-        mag = np.atleast_2d(np.asarray(block.get("mag"), float))
-        freq = np.atleast_2d(np.asarray(block.get("frequency"), float))
-        pw = np.asarray(block.get("power"), float)
-        phase_raw = np.asarray(pdata.get("phase", {}).get("phase", []), float)
-        phase = np.atleast_2d(phase_raw) if phase_raw.size else np.zeros_like(mag)
-        if freq.shape[0] == 1 and mag.shape[0] > 1:
-            freq = np.tile(freq, (mag.shape[0], 1))
-        powers = pw[:, 0] if pw.ndim == 2 else np.atleast_1d(pw)
-        if powers.size != mag.shape[0]:
-            powers = np.resize(powers, mag.shape[0])
+        mb = pdata["mag"]
+        mag = np.asarray(mb.get("mag"), float)
+        pw = np.asarray(mb.get("power"), float)
+        freq = np.asarray(pdata.get("frequency", {}).get("frequency", []), float)
+        phase = np.asarray(pdata.get("phase", {}).get("phase", []), float)
+
+        if mag.ndim == 2:                       # gridded (n_powers, n_points)
+            mag2d = mag
+            npow, npoint = mag2d.shape
+            powers = pw[:, 0] if pw.ndim == 2 else pw.reshape(npow, npoint)[:, 0]
+            freq2d = (freq if (freq.ndim == 2 and freq.shape == mag2d.shape)
+                      else (freq.reshape(npow, npoint) if freq.size == mag2d.size
+                            else np.tile(freq.ravel(), (npow, 1))))
+            phase2d = (phase if (phase.ndim == 2 and phase.shape == mag2d.shape)
+                       else (phase.reshape(npow, npoint) if phase.size == mag2d.size
+                             else np.zeros_like(mag2d)))
+        else:                                   # flattened — group power-major
+            uniq = []
+            for p in (pw.tolist() if pw.size else []):
+                if not uniq or uniq[-1] != p:
+                    uniq.append(float(p))
+            npow = max(len(uniq), 1)
+            npoint = mag.size // npow
+            mag2d = mag.reshape(npow, npoint)
+            freq2d = (freq.reshape(npow, npoint) if freq.size == mag.size
+                      else np.tile(freq.ravel(), (npow, 1)))
+            phase2d = (phase.reshape(npow, npoint) if phase.size == mag.size
+                       else np.zeros_like(mag2d))
+            powers = np.array(uniq) if uniq else np.arange(npow, dtype=float)
         return {"kind": "hpd", "name": name, "powers": [float(p) for p in powers],
-                "freq": freq[0], "freqs": freq, "mag": mag,
-                "phase": phase, "run_id": run_id}
+                "freq": freq2d[0], "freqs": freq2d, "mag": mag2d,
+                "phase": phase2d, "run_id": run_id}
 
     # ---- Generic fallback: find first magnitude-like dependent -----
     for dep, block in pdata.items():
