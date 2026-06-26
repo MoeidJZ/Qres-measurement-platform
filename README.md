@@ -21,7 +21,6 @@ QRes Platform combines instrument control, a step-by-step measurement workflow, 
 - [Configuration & settings](#configuration--settings)
 - [Tips & troubleshooting](#tips--troubleshooting)
 - [Acknowledgements](#acknowledgements)
-- [License](#license)
 
 ---
 
@@ -31,7 +30,6 @@ QRes Platform combines instrument control, a step-by-step measurement workflow, 
 - **Real instrument control** — Keysight PNA-X (N5245A / N52xx family) over QCoDeS, plus Oxford **Proteox** and **Teslatron** cryostats, or a **Manual** fridge mode for offline / dry runs.
 - **Interruptible sweeps** — every long sweep can be stopped cleanly mid-acquisition without leaving the instrument in a bad state.
 - **Authoritative circle-fit analysis** — uses the full Probst `resonator_tools` notch-port fitter for diameter-corrected internal/coupling quality factors with error estimates and χ².
-- **Photon-number calibration** — converts VNA power to on-chip power via a configurable attenuation and computes the intra-resonator photon number.
 - **Live feedback** — quality-factor-versus-power plots update after every point, complete with error bars; circle / magnitude / phase panels update in real time while you drag a fit region.
 - **Persistent, self-describing data** — all sweeps are written to a QCoDeS SQLite database with descriptive run names (resonator, temperature, power, frequency band) and one-click CSV export.
 - **Light & dark themes**, persistent user settings, and built-in tutorials for both the measurement and analysis sides.
@@ -329,8 +327,9 @@ The welcome screen lets you pick a fridge type and start the guided workflow, or
 
 3. P. G. Baity, C. Maclean, V. Seferai, J. Bronstein, Y. Shu, T. Hemakumara, and M. Weides, "Circle fit optimization for resonator quality factor measurements: Point redistribution for maximal accuracy," *Physical Review Research* **6**, 013329 (2024). https://doi.org/10.1103/PhysRevResearch.6.013329
 
+## References
+ 
+1. S. Probst, F. B. Song, P. A. Bushev, A. V. Ustinov, and M. Weides, "Efficient and robust analysis of complex scattering data under noise in microwave resonators," *Review of Scientific Instruments* **86**, 024706 (2015). https://doi.org/10.1063/1.4907935
+2. M. S. Khalil, M. J. A. Stoutimore, F. C. Wellstood, and K. D. Osborn, "An analysis method for asymmetric resonator transmission applied to superconducting devices," *Journal of Applied Physics* **111**, 054510 (2012). https://doi.org/10.1063/1.3692073
+3. P. G. Baity, C. Maclean, V. Seferai, J. Bronstein, Y. Shu, T. Hemakumara, and M. Weides, "Circle fit optimization for resonator quality factor measurements: Point redistribution for maximal accuracy," *Physical Review Research* **6**, 013329 (2024). https://doi.org/10.1103/PhysRevResearch.6.013329
 ---
-
-## License
-
-Add your chosen license here (e.g. MIT) and include a `LICENSE` file in the repository root.
