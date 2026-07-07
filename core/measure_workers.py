@@ -415,7 +415,7 @@ def measure_resonator_spd(im, r, schedule, sched_map, points, trace, tag,
                           t_label_override, abort, on_point, on_progress):
     """One resonator, SPD linear sweep, powers low->high, single multi-power run."""
     from qcodes.dataset import load_or_create_experiment, Measurement
-    from core.fitting import fit_notch, s21_from_mag_phase
+    from core.fitting import fit_notch, fit_notch_auto, s21_from_mag_phase
     pna = im.pna
     num = r["num"]
     f0, f1 = float(r["fstart_hz"]), float(r["fstop_hz"])
@@ -450,7 +450,7 @@ def measure_resonator_spd(im, r, schedule, sched_map, points, trace, tag,
             mag = np.array(pna.magnitude(), float)
             phase = np.array(pna.phase(), float)
             ds.add_result((pna.power, pw), (pna.magnitude, mag), (pna.phase, phase))
-            fit = fit_notch(freq, s21_from_mag_phase(mag, phase))
+            fit = fit_notch_auto(freq, s21_from_mag_phase(mag, phase))
             qi_curve.append((float(pw), fit.get("Qi"), fit.get("Qi_err")))
             on_point({"num": num, "power_dbm": float(pw), "mode": "spd",
                       "Qi": fit.get("Qi"), "Qi_err": fit.get("Qi_err"),
@@ -481,7 +481,7 @@ def measure_resonator_hpd(im, r, schedule, sched_map, points, trace, reject, tag
     previous seed instead.
     """
     from qcodes.dataset import load_or_create_experiment, Measurement
-    from core.fitting import fit_notch, s21_from_mag_phase
+    from core.fitting import fit_notch, fit_notch_auto, s21_from_mag_phase
     from core.pna_segment import restore_linear_sweep
     pna = im.pna
     num = r["num"]
@@ -558,7 +558,7 @@ def measure_resonator_hpd(im, r, schedule, sched_map, points, trace, reject, tag
             ds.add_result(("power", float(pw)), ("point", idx),
                           ("frequency", freq), ("mag", mag), ("phase", phase))
 
-            fit = fit_notch(freq, s21_from_mag_phase(mag, phase))
+            fit = fit_notch_auto(freq, s21_from_mag_phase(mag, phase))
             reused = False
             if fit.get("ok"):
                 new_Qi = fit["Qi"]

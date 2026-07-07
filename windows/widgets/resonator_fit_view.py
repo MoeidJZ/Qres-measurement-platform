@@ -130,6 +130,25 @@ class ResonatorFitView(QWidget):
     def get_crop_hz(self) -> Tuple[float, float]:
         return self.get_range_hz()
 
+    def set_range_hz(self, lo: float, hi: float, emit: bool = False):
+        """Programmatically set the fit region (used when an owner drives the
+        range by frequency index rather than by dragging)."""
+        if self._freq is None or not self._freq.size:
+            return
+        self._sync = True
+        for reg in (self.region_mag, self.region_pha):
+            reg.setRegion([float(lo), float(hi)])
+        self._sync = False
+        self.readout.setText(f"fit range: {lo:,.0f} – {hi:,.0f} Hz "
+                             f"({(hi-lo)/1e6:.3f} MHz)")
+        if emit:
+            self._emit_range()
+
+    def set_region_movable(self, movable: bool):
+        """Disable/enable dragging the fit region on the plots."""
+        for reg in (self.region_mag, self.region_pha):
+            reg.setMovable(bool(movable))
+
     def reset_range(self):
         if self._freq is None or not self._freq.size:
             return

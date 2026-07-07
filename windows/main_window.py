@@ -151,7 +151,7 @@ class MainPlatformWindow(QMainWindow):
             self.statusBar().showMessage("PNA not connected — connect it first.", 4000)
             return
         if self._pna_window is None:
-            self._pna_window = PNAWindow(self)
+            self._pna_window = PNAWindow(None)
         self._pna_window.show()
         self._pna_window.raise_()
 
@@ -161,7 +161,7 @@ class MainPlatformWindow(QMainWindow):
             return
         if self._wideband_window is None:
             from windows.wideband_window import WidebandWindow
-            self._wideband_window = WidebandWindow(self)
+            self._wideband_window = WidebandWindow(None)
             self._wideband_window.picksConfirmed.connect(self._on_picks_confirmed)
         self._wideband_window.show()
         self._wideband_window.raise_()
@@ -174,7 +174,7 @@ class MainPlatformWindow(QMainWindow):
     def _ensure_span_picker(self):
         if self._span_picker is None:
             from windows.span_picker_window import SpanPickerWindow
-            self._span_picker = SpanPickerWindow(self)
+            self._span_picker = SpanPickerWindow(None)
             self._span_picker.resonatorsReady.connect(self._on_resonators_ready)
         return self._span_picker
 
@@ -193,7 +193,7 @@ class MainPlatformWindow(QMainWindow):
     def _ensure_quality(self):
         if self._quality_window is None:
             from windows.quality_window import QualityWindow
-            self._quality_window = QualityWindow(self)
+            self._quality_window = QualityWindow(None)
             self._quality_window.resonatorsForPower.connect(self._on_resonators_for_power)
         return self._quality_window
 
@@ -213,7 +213,7 @@ class MainPlatformWindow(QMainWindow):
     def _ensure_power(self):
         if self._power_window is None:
             from windows.power_window import PowerWindow
-            self._power_window = PowerWindow(self)
+            self._power_window = PowerWindow(None)
             self._power_window.resonatorsForTemperature.connect(self._on_resonators_for_temp)
         return self._power_window
 
@@ -232,7 +232,7 @@ class MainPlatformWindow(QMainWindow):
     def _ensure_temperature(self):
         if self._temperature_window is None:
             from windows.temperature_window import TemperatureWindow
-            self._temperature_window = TemperatureWindow(self)
+            self._temperature_window = TemperatureWindow(None)
         return self._temperature_window
 
     def _open_temperature(self):
@@ -245,12 +245,12 @@ class MainPlatformWindow(QMainWindow):
     def _open_analysis(self):
         if self._analysis_window is None:
             from windows.analysis_window import AnalysisWindow
-            self._analysis_window = AnalysisWindow(self)
+            self._analysis_window = AnalysisWindow(None)
         self._analysis_window.show(); self._analysis_window.raise_()
 
     def _open_tutorial(self, kind):
         from windows.tutorial_window import TutorialWindow
-        t = TutorialWindow(kind, self)
+        t = TutorialWindow(kind, None)
         self._tutorials.append(t)
         t.show(); t.raise_()
 
@@ -274,6 +274,21 @@ class MainPlatformWindow(QMainWindow):
             else:
                 b.setEnabled(ready and not busy)
         self.statusBar().showMessage("Busy — measurement running" if busy else "Ready")
+
+    def _all_child_windows(self):
+        wins = [self._pna_window, self._wideband_window, self._span_picker,
+                self._quality_window, self._power_window, self._temperature_window,
+                self._analysis_window] + list(self._tutorials)
+        return [w for w in wins if w is not None]
+
+    def closeEvent(self, ev):
+        # these are independent top-level windows now, so close them explicitly
+        for w in self._all_child_windows():
+            try:
+                w.close()
+            except Exception:
+                pass
+        super().closeEvent(ev)
 
     def _go_back(self):
         if callable(self.on_back):

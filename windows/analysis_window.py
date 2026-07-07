@@ -19,7 +19,7 @@ from typing import Dict
 import numpy as np
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QListWidget, QListWidgetItem, QComboBox, QDoubleSpinBox, QFileDialog,
+    QListWidget, QListWidgetItem, QComboBox, QDoubleSpinBox, QSpinBox, QSlider, QFileDialog,
     QInputDialog, QMessageBox, QSplitter, QGroupBox, QGridLayout, QShortcut,
 )
 from PyQt5.QtGui import QKeySequence
@@ -27,7 +27,8 @@ from PyQt5.QtCore import Qt
 
 from core.settings import settings
 from core import analysis_io as aio
-from core.fitting import fit_notch, s21_from_mag_phase, add_photons, format_q, format_photons
+from core.fitting import (fit_notch, fit_notch_auto, s21_from_mag_phase,
+                          add_photons, format_q, format_photons)
 from windows.widgets.resonator_fit_view import ResonatorFitView
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,7 @@ class AnalysisWindow(QMainWindow):
         self.base_name = ""
         self._loaded: Dict = {}
         self._runs = []
+        self._keep_range = False   # once the user sets a range, keep it across powers
         self._build_ui()
         self._install_hotkeys()
 
@@ -69,19 +71,38 @@ class AnalysisWindow(QMainWindow):
 
         cg = QGroupBox("Trace & fit"); g = QGridLayout(cg)
         g.addWidget(QLabel("Power  (n / p)"), 0, 0)
+        prow = QHBoxLayout()
+        self.btn_prev = QPushButton("◀ Prev"); self.btn_prev.clicked.connect(self._prev_power)
         self.cmb_power = QComboBox(); self.cmb_power.currentIndexChanged.connect(self._on_power)
-        g.addWidget(self.cmb_power, 0, 1)
-        g.addWidget(QLabel("Attenuation (dB)"), 1, 0)
+        self.btn_next = QPushButton("Next ▶"); self.btn_next.clicked.connect(self._next_power)
+        prow.addWidget(self.btn_prev); prow.addWidget(self.cmb_power, 1); prow.addWidget(self.btn_next)
+        g.addLayout(prow, 0, 1)
+
+        g.addWidget(QLabel("Fit start"), 1, 0)
+        self.sl_lo = QSlider(Qt.Horizontal); self.sl_lo.setRange(0, 0)
+        self.sl_lo.valueChanged.connect(self._on_index_changed)
+        g.addWidget(self.sl_lo, 1, 1)
+        self.lbl_lo = QLabel("—"); self.lbl_lo.setStyleSheet("font-family:monospace; font-size:11px;")
+        g.addWidget(self.lbl_lo, 2, 0, 1, 2)
+
+        g.addWidget(QLabel("Fit stop"), 3, 0)
+        self.sl_hi = QSlider(Qt.Horizontal); self.sl_hi.setRange(0, 0)
+        self.sl_hi.valueChanged.connect(self._on_index_changed)
+        g.addWidget(self.sl_hi, 3, 1)
+        self.lbl_hi = QLabel("—"); self.lbl_hi.setStyleSheet("font-family:monospace; font-size:11px;")
+        g.addWidget(self.lbl_hi, 4, 0, 1, 2)
+
+        g.addWidget(QLabel("Attenuation (dB)"), 5, 0)
         self.sp_atten = QDoubleSpinBox(); self.sp_atten.setRange(-200, 0); self.sp_atten.setDecimals(1)
         self.sp_atten.setValue(float(settings.get("analysis.attenuation_db", -70)))
         self.sp_atten.valueChanged.connect(lambda *_: self._refit_live())
-        g.addWidget(self.sp_atten, 1, 1)
-        g.addWidget(QLabel("Smoothing σ"), 2, 0)
+        g.addWidget(self.sp_atten, 5, 1)
+        g.addWidget(QLabel("Smoothing σ"), 6, 0)
         self.sp_sigma = QDoubleSpinBox(); self.sp_sigma.setRange(0, 20); self.sp_sigma.setDecimals(1)
         self.sp_sigma.valueChanged.connect(lambda *_: self._refit_live())
-        g.addWidget(self.sp_sigma, 2, 1)
-        self.btn_reset = QPushButton("Reset range"); self.btn_reset.clicked.connect(self._reset_range)
-        g.addWidget(self.btn_reset, 3, 0, 1, 2)
+        g.addWidget(self.sp_sigma, 6, 1)
+        self.btn_reset = QPushButton("Reset range (full)"); self.btn_reset.clicked.connect(self._reset_range)
+        g.addWidget(self.btn_reset, 7, 0, 1, 2)
         L.addWidget(cg)
 
         eg = QGroupBox("Export"); e = QVBoxLayout(eg)
@@ -105,8 +126,8 @@ class AnalysisWindow(QMainWindow):
         self.lbl_metrics = QLabel(""); self.lbl_metrics.setStyleSheet("font-family:monospace;")
         self.lbl_metrics.setWordWrap(True)
         R.addWidget(self.lbl_metrics)
-        self.view = ResonatorFitView()
-        self.view.rangeChanged.connect(lambda *_: self._refit_live())
+        self.view = ResonatorFitView(stacked=True)
+        self.view.set_region_movable(False)   # range is controlled by the sliders
         R.addWidget(self.view, 1)
         split.addWidget(right); split.setStretchFactor(1, 1)
 
@@ -114,7 +135,8 @@ class AnalysisWindow(QMainWindow):
         self._set_enabled(False)
 
     def _set_enabled(self, on):
-        for w in (self.cmb_power, self.sp_atten, self.sp_sigma, self.btn_reset,
+        for w in (self.cmb_power, self.btn_prev, self.btn_next, self.sl_lo, self.sl_hi,
+                  self.sp_atten, self.sp_sigma, self.btn_reset,
                   self.btn_export, self.btn_export_all):
             w.setEnabled(on)
 
@@ -182,6 +204,7 @@ class AnalysisWindow(QMainWindow):
         for pw in self._loaded["powers"]:
             self.cmb_power.addItem("n/a" if pw != pw else f"{pw:g} dBm")
         self.cmb_power.blockSignals(False)
+        self._keep_range = False        # fresh run → auto-pick a window for the first power
         self.cmb_power.setCurrentIndex(0)
         self._on_power(0)
 
@@ -195,9 +218,63 @@ class AnalysisWindow(QMainWindow):
         if not self._loaded:
             return
         pw, freq, mag, phase = self._trace()
-        self.view.set_data(freq, mag, phase)   # resets range -> triggers live fit
+        self.view.set_data(freq, mag, phase)
+        n = int(freq.size)
+        self.sl_lo.blockSignals(True); self.sl_hi.blockSignals(True)
+        self.sl_lo.setRange(0, max(n - 2, 0))
+        self.sl_hi.setRange(1, max(n - 1, 1))
+        if self._keep_range:
+            # preserve the user's chosen window when stepping through powers
+            i0 = min(self.sl_lo.value(), n - 2)
+            i1 = min(max(self.sl_hi.value(), i0 + 1), n - 1)
+        else:
+            # first power of a run → auto-pick a sensible window so a fit shows
+            auto = fit_notch_auto(freq, s21_from_mag_phase(mag, phase),
+                                  gaussian_sigma=self.sp_sigma.value())
+            i0, i1 = self._indices_from_crop(freq, auto.get("auto_crop"))
+            self._keep_range = True
+        self.sl_lo.setValue(i0); self.sl_hi.setValue(i1)
+        self.sl_lo.blockSignals(False); self.sl_hi.blockSignals(False)
+        if n >= 2:
+            self.view.set_range_hz(freq[i0], freq[i1], emit=False)
+            self._update_range_labels(freq, i0, i1)
         self.lbl_head.setText(f"{self._loaded['name']}  ·  "
                               + ("single trace" if pw != pw else f"{pw:g} dBm"))
+        self._refit_live()
+
+    def _update_range_labels(self, freq, i0, i1):
+        self.lbl_lo.setText(f"start  idx {i0} / {freq.size-1}   ({freq[i0]/1e9:.6f} GHz)")
+        self.lbl_hi.setText(f"stop   idx {i1} / {freq.size-1}   ({freq[i1]/1e9:.6f} GHz)")
+
+    def _indices_from_crop(self, freq, crop):
+        n = int(freq.size)
+        if not crop or n < 2:
+            return 0, max(n - 1, 0)
+        lo, hi = min(crop), max(crop)
+        i0 = int(np.searchsorted(freq, lo, side="left"))
+        i1 = int(np.searchsorted(freq, hi, side="right")) - 1
+        i0 = max(0, min(i0, n - 2))
+        i1 = max(i0 + 1, min(i1, n - 1))
+        return i0, i1
+
+    def _on_index_changed(self, *_):
+        if not self._loaded:
+            return
+        pw, freq, mag, phase = self._trace()
+        n = int(freq.size)
+        if n < 2:
+            return
+        i0 = min(self.sl_lo.value(), n - 2)
+        i1 = min(max(self.sl_hi.value(), i0 + 1), n - 1)
+        # keep the two sliders from crossing
+        if self.sl_hi.value() != i1:
+            self.sl_hi.blockSignals(True); self.sl_hi.setValue(i1); self.sl_hi.blockSignals(False)
+        if self.sl_lo.value() != i0:
+            self.sl_lo.blockSignals(True); self.sl_lo.setValue(i0); self.sl_lo.blockSignals(False)
+        self._keep_range = True
+        self.view.set_range_hz(freq[i0], freq[i1], emit=False)
+        self._update_range_labels(freq, i0, i1)
+        self._refit_live()
 
     def _next_power(self):
         if self.cmb_power.count() > 1:
@@ -208,7 +285,18 @@ class AnalysisWindow(QMainWindow):
             self.cmb_power.setCurrentIndex((self.cmb_power.currentIndex() - 1) % self.cmb_power.count())
 
     def _reset_range(self):
-        self.view.reset_range()
+        if not self._loaded:
+            return
+        pw, freq, mag, phase = self._trace()
+        n = int(freq.size)
+        self.sl_lo.blockSignals(True); self.sl_hi.blockSignals(True)
+        self.sl_lo.setValue(0); self.sl_hi.setValue(max(n - 1, 1))
+        self.sl_lo.blockSignals(False); self.sl_hi.blockSignals(False)
+        self._keep_range = True
+        if n >= 2:
+            self.view.set_range_hz(freq[0], freq[-1], emit=False)
+            self._update_range_labels(freq, 0, n - 1)
+        self._refit_live()
 
     # ------------------------------------------------------------------
     # Live fit
@@ -218,9 +306,15 @@ class AnalysisWindow(QMainWindow):
         if not self._loaded:
             return
         pw, freq, mag, phase = self._trace()
+        n = int(freq.size)
+        if n >= 2:
+            i0 = max(0, min(self.sl_lo.value(), n - 2))
+            i1 = max(i0 + 1, min(self.sl_hi.value(), n - 1))
+            crop = (float(freq[i0]), float(freq[i1]))
+        else:
+            crop = None
         fit = fit_notch(freq, s21_from_mag_phase(mag, phase),
-                        crop_hz=self.view.get_range_hz(),
-                        gaussian_sigma=self.sp_sigma.value())
+                        crop_hz=crop, gaussian_sigma=self.sp_sigma.value())
         chip = (pw + self.sp_atten.value()) if pw == pw else float("nan")
         add_photons(fit, chip)
         self._loaded["_fit"] = fit
@@ -236,7 +330,7 @@ class AnalysisWindow(QMainWindow):
                 f"n̄ = {format_photons(fit.get('photons'))}"
                 + ("" if pw != pw else f"  @ {chip:.1f} dBm chip"))
         else:
-            self.lbl_metrics.setText("fit failed — adjust the range.  " + fit.get("error", ""))
+            self.lbl_metrics.setText("fit failed — adjust the index range.  " + fit.get("error", ""))
 
     # ------------------------------------------------------------------
     # Export
@@ -259,10 +353,16 @@ class AnalysisWindow(QMainWindow):
     def _export_all_powers(self):
         if not self._loaded:
             return
-        crop = self.view.get_range_hz()
         atten = self.sp_atten.value(); settings.set("analysis.attenuation_db", atten)
+        i0v, i1v = self.sl_lo.value(), self.sl_hi.value()
         n = 0
         for pw, freq, mag, phase in aio.iter_traces(self._loaded):
+            m = int(freq.size)
+            if m >= 2:
+                i0 = max(0, min(i0v, m - 2)); i1 = max(i0 + 1, min(i1v, m - 1))
+                crop = (float(freq[i0]), float(freq[i1]))
+            else:
+                crop = None
             fit = fit_notch(freq, s21_from_mag_phase(mag, phase), crop_hz=crop,
                             gaussian_sigma=self.sp_sigma.value())
             add_photons(fit, (pw + atten) if pw == pw else float("nan"))

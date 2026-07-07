@@ -356,7 +356,7 @@ class TemperatureWindow(QMainWindow):
             self.qi_plot.addItem(eb)
             self._curves[key] = {"powers": [], "qis": [], "errs": [], "curve": c, "eb": eb}
         qi = d.get("Qi"); qe = d.get("Qi_err")
-        if d.get("fit_ok") and qi and qi > 0:
+        if d.get("fit_ok") and qi and 1e2 <= qi <= 1e10:
             self._curves[key]["powers"].append(d["power_dbm"])
             self._curves[key]["qis"].append(qi)
             self._curves[key]["errs"].append(qe if (qe and np.isfinite(qe)) else 0.0)
@@ -364,6 +364,7 @@ class TemperatureWindow(QMainWindow):
             xs = np.array(self._curves[key]["powers"])[order]
             ys = np.array(self._curves[key]["qis"])[order]
             es = np.array(self._curves[key]["errs"])[order]
+            es = np.clip(es, 0.0, ys * 0.9)   # cap whisker so a huge fit error can't rescale the log axis
             self._curves[key]["curve"].setData(xs, ys)
             self._curves[key]["eb"].setData(x=xs, y=ys, top=es, bottom=es, beam=0.0)
         self.lbl_temp.setText(f"{d.get('t_label','')} · Res {d['num']} @ {d['power_dbm']:g} dBm "

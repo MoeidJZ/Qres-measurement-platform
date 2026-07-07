@@ -302,7 +302,7 @@ class PowerWindow(QMainWindow):
                                  pen=pg.mkPen(self._color(num), width=1), beam=0.0)
             self.qi_plot.addItem(eb)
             self._curves[num] = {"powers": [], "qis": [], "errs": [], "curve": c, "eb": eb}
-        if d.get("fit_ok") and qi and qi > 0:
+        if d.get("fit_ok") and qi and 1e2 <= qi <= 1e10:
             self._curves[num]["powers"].append(pw)
             self._curves[num]["qis"].append(qi)
             self._curves[num]["errs"].append(qe if (qe and np.isfinite(qe)) else 0.0)
@@ -310,6 +310,11 @@ class PowerWindow(QMainWindow):
             xs = np.array(self._curves[num]["powers"])[order]
             ys = np.array(self._curves[num]["qis"])[order]
             es = np.array(self._curves[num]["errs"])[order]
+            # A poorly conditioned circle fit can report an enormous Qi error
+            # (e.g. 1e27). On a log axis that whisker would rescale the whole
+            # plot and hide the real points, so cap it for display (the true
+            # value is still printed in the log below).
+            es = np.clip(es, 0.0, ys * 0.9)
             self._curves[num]["curve"].setData(xs, ys)
             self._curves[num]["eb"].setData(x=xs, y=ys, top=es, bottom=es, beam=0.0)
         tag = " (reused seed)" if d.get("reused") else ""

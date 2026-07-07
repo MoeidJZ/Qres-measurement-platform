@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Optional, Dict
 
 import numpy as np
+import math
 
 try:
     from scipy.constants import hbar as _HBAR
@@ -110,6 +111,78 @@ def fit_notch(f_hz, z, *, crop_hz: Optional[tuple] = None,
     except Exception as e:
         out["error"] = str(e)
     return out
+
+
+QI_MIN_DEFAULT = 1.0e3
+QI_MAX_DEFAULT = 1.0e8
+
+
+def _qi_in_range(fit: Dict, lo: float, hi: float) -> bool:
+    q = fit.get("Qi")
+    return bool(fit.get("ok") and q is not None and q > 0 and lo <= q <= hi)
+
+
+def _fit_score(fit: Dict, lo: float, hi: float) -> float:
+    """Higher is better. In-range fits win; otherwise prefer a positive Qi whose
+    log is closest to the middle of the acceptable band."""
+    q = fit.get("Qi")
+    if not fit.get("ok") or not q or q <= 0:
+        return -1e18
+    if lo <= q <= hi:
+        return 0.0
+    center = math.sqrt(lo * hi)
+    return -abs(math.log10(q) - math.log10(center))
+
+
+def fit_notch_auto(f_hz, z, *, crop_hz: Optional[tuple] = None,
+                   gaussian_sigma: Optional[float] = None,
+                   qi_range: tuple = (QI_MIN_DEFAULT, QI_MAX_DEFAULT)) -> Dict:
+    """
+    Circle-fit that self-corrects its frequency window. It first fits the given
+    range; if the internal quality factor comes back outside ``qi_range`` (e.g. a
+    degenerate 1e-27 from fitting a narrow dip inside a wide span), it re-crops to
+    progressively narrower windows centred on the resonance (magnitude minimum)
+    and refits until Qi is sensible. Returns the first in-range fit, or the best
+    effort if none qualifies. The chosen window is reported in ``fit['auto_crop']``.
+    """
+    lo, hi = float(qi_range[0]), float(qi_range[1])
+    f = np.asarray(f_hz, dtype=float)
+    zc = np.asarray(z, dtype=complex)
+
+    fit = fit_notch(f, zc, crop_hz=crop_hz, gaussian_sigma=gaussian_sigma)
+    if _qi_in_range(fit, lo, hi):
+        fit["auto_crop"] = crop_hz
+        return fit
+
+    if f.size < 12:
+        fit["auto_crop"] = crop_hz
+        return fit
+
+    # locate the resonance (minimum of a lightly smoothed |S21|)
+    mag = np.abs(zc)
+    k = max(3, mag.size // 101)
+    if k % 2 == 0:
+        k += 1
+    magf = np.convolve(mag, np.ones(k) / k, mode="same")
+    fc = float(f[int(np.argmin(magf))])
+    fspan = float(f[-1] - f[0])
+
+    best = fit
+    for frac in (0.6, 0.4, 0.25, 0.15, 0.09, 0.05, 0.03):
+        half = 0.5 * frac * fspan
+        window = (fc - half, fc + half)
+        m = (f >= window[0]) & (f <= window[1])
+        if m.sum() < 12:
+            continue
+        trial = fit_notch(f, zc, crop_hz=window, gaussian_sigma=gaussian_sigma)
+        if _qi_in_range(trial, lo, hi):
+            trial["auto_crop"] = window
+            return trial
+        if _fit_score(trial, lo, hi) > _fit_score(best, lo, hi):
+            best = trial
+            best["auto_crop"] = window
+    best.setdefault("auto_crop", crop_hz)
+    return best
 
 
 def photons_in_resonator(fit: Dict, chip_power_dbm: float) -> float:
