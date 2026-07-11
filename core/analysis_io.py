@@ -190,7 +190,9 @@ def parse_run_name(name: str) -> Dict[str, str]:
     res = re.search(r"Res(\d+)", name or "")
     pw = re.search(r"(-?\d+(?:\.\d+)?)dBm", name or "")
     temp = re.search(r"_(\d+(?:\.\d+)?(?:mK|K))(?:_|$)", name or "")
+    chip = (name.split("_Res")[0] if name and "_Res" in name else "")
     return {
+        "chip": chip,
         "res": f"Res{res.group(1)}" if res else "Res",
         "temp": temp.group(1) if temp else "unkT",
         "power": (pw.group(1) + "dBm") if pw else "",
@@ -252,7 +254,7 @@ def export_trace(export_dir: str, base_name: str, run_name: str, power_dbm,
     os.makedirs(export_dir, exist_ok=True)
     tags = parse_run_name(run_name)
     p_tag = tags["power"] or (f"{power_dbm:g}dBm" if power_dbm == power_dbm else "")
-    parts = [base_name, tags["res"], tags["temp"]] + ([p_tag] if p_tag else [])
+    parts = [base_name, tags.get("chip", ""), tags["res"], tags["temp"]] + ([p_tag] if p_tag else [])
     fname = _safe_filename("_".join(p for p in parts if p) + ".csv")
     path = os.path.join(export_dir, fname)
 

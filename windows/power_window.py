@@ -48,6 +48,7 @@ class PowerWindow(QMainWindow):
         self.setWindowTitle("4 · Power-Dependent Measurement")
         self.setMinimumSize(1180, 760)
         self._resonators: List[Dict] = []
+        self._res_visible: List[Dict] = []
         self._worker = None
         self._curves: Dict[int, Dict] = {}   # num -> {'powers':[], 'qis':[], 'curve':PlotDataItem}
         self._build_ui()
@@ -55,16 +56,57 @@ class PowerWindow(QMainWindow):
 
     def load(self, resonators: List[Dict]):
         self._resonators = [dict(r) for r in resonators]
-        self.res_list.clear()
         for r in self._resonators:
-            self._add_res_item(r)
+            r.setdefault("chip", "")
+            r.setdefault("_checked", True)
+        self._rebuild_chip_filter()
+        self._refresh_res_list()
 
-    def _add_res_item(self, r):
-        it = QListWidgetItem(f"Res {r['num']}  {r.get('fr', r['center_hz'])/1e9:.6f} GHz "
-                             f"· Qi={format_q(r.get('Qi'))}")
-        it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
-        it.setCheckState(Qt.Checked)
-        self.res_list.addItem(it)
+    def _res_label(self, r):
+        chip = r.get("chip") or ""
+        span_khz = abs(float(r["fstop_hz"]) - float(r["fstart_hz"])) / 1e3
+        head = f"{chip}_Res{r['num']}" if chip else f"Res {r['num']}"
+        return (f"{head}  {r.get('fr', r['center_hz'])/1e9:.6f} GHz "
+                f"· Qi={format_q(r.get('Qi'))}  · span={span_khz:.1f} kHz")
+
+    def _rebuild_chip_filter(self):
+        chips = []
+        for r in self._resonators:
+            c = r.get("chip") or ""
+            if c not in chips:
+                chips.append(c)
+        cur = self.cmb_chip.currentText() if hasattr(self, "cmb_chip") else ""
+        self.cmb_chip.blockSignals(True)
+        self.cmb_chip.clear(); self.cmb_chip.addItem("All chips")
+        for c in chips:
+            self.cmb_chip.addItem(c if c else "(unnamed)")
+        idx = self.cmb_chip.findText(cur)
+        self.cmb_chip.setCurrentIndex(idx if idx >= 0 else 0)
+        self.cmb_chip.blockSignals(False)
+
+    def _chip_filter(self):
+        if self.cmb_chip.currentIndex() <= 0:
+            return None
+        txt = self.cmb_chip.currentText()
+        return "" if txt == "(unnamed)" else txt
+
+    def _refresh_res_list(self):
+        flt = self._chip_filter()
+        self._res_visible = [r for r in self._resonators
+                             if flt is None or (r.get("chip") or "") == flt]
+        self.res_list.blockSignals(True)
+        self.res_list.clear()
+        for r in self._res_visible:
+            it = QListWidgetItem(self._res_label(r))
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+            it.setCheckState(Qt.Checked if r.get("_checked", True) else Qt.Unchecked)
+            self.res_list.addItem(it)
+        self.res_list.blockSignals(False)
+
+    def _on_res_item_changed(self, item):
+        row = self.res_list.row(item)
+        if 0 <= row < len(self._res_visible):
+            self._res_visible[row]["_checked"] = (item.checkState() == Qt.Checked)
 
     def _load_from_db(self):
         dlg = QualityRunPicker(self, single=False)
@@ -86,11 +128,15 @@ class PowerWindow(QMainWindow):
             if num is None or num in used:
                 num = (max(used) + 1) if used else 1
             used.add(num)
-            r = {"num": num, "center_hz": base["center_hz"],
+            chip = base.get("chip") or (base.get("name","").split("_Res")[0]
+                                        if "_Res" in base.get("name","") else "")
+            r = {"num": num, "chip": chip, "_checked": True,
+                 "center_hz": base["center_hz"],
                  "fstart_hz": base["fstart_hz"], "fstop_hz": base["fstop_hz"],
                  "span_mhz": base["span_mhz"], "fr": fit["fr"], "Qi": fit["Qi"],
                  "Ql": fit["Ql"], "theta0": fit.get("theta0", 0.0)}
-            self._resonators.append(r); self._add_res_item(r); added += 1
+            self._resonators.append(r); added += 1
+        self._rebuild_chip_filter(); self._refresh_res_list()
         self._log(f"Loaded {added} resonator(s) from database.")
 
     # ------------------------------------------------------------------
@@ -145,13 +191,32 @@ class PowerWindow(QMainWindow):
         self.table.horizontalHeader().setStretchLastSection(True)
         L.addWidget(self.table, 1)
 
+        trow = QHBoxLayout()
+        self.btn_modify = QPushButton("Modify table…"); self.btn_modify.clicked.connect(self._modify_table)
+        self.btn_savecfg = QPushButton("Save config…"); self.btn_savecfg.clicked.connect(self._save_config)
+        self.btn_loadcfg = QPushButton("Load config…"); self.btn_loadcfg.clicked.connect(self._load_config)
+        for x in (self.btn_modify, self.btn_savecfg, self.btn_loadcfg):
+            trow.addWidget(x)
+        L.addLayout(trow)
+
         # resonators
+        crow = QHBoxLayout()
+        crow.addWidget(QLabel("Chip"))
+        self.cmb_chip = QComboBox(); self.cmb_chip.addItem("All chips")
+        self.cmb_chip.currentIndexChanged.connect(lambda *_: self._refresh_res_list())
+        crow.addWidget(self.cmb_chip, 1)
+        L.addLayout(crow)
         L.addWidget(QLabel("Resonators to run"))
         self.res_list = QListWidget(); self.res_list.setMaximumHeight(120)
+        self.res_list.itemChanged.connect(self._on_res_item_changed)
         L.addWidget(self.res_list)
+        rrow = QHBoxLayout()
         self.btn_loaddb = QPushButton("Load resonator(s) from DB…")
         self.btn_loaddb.clicked.connect(self._load_from_db)
-        L.addWidget(self.btn_loaddb)
+        self.btn_spans = QPushButton("Edit spans (kHz)…")
+        self.btn_spans.clicked.connect(self._edit_spans)
+        rrow.addWidget(self.btn_loaddb); rrow.addWidget(self.btn_spans)
+        L.addLayout(rrow)
 
         brow = QHBoxLayout()
         self.btn_run = QPushButton("Run power sweep"); self.btn_run.setObjectName("primary")
@@ -230,19 +295,88 @@ class PowerWindow(QMainWindow):
         for i in range(self.table.rowCount()):
             try:
                 pw = float(self.table.item(i, 0).text())
-                av = int(np.clip(int(float(self.table.item(i, 1).text())), 1, 15))
-                bw = int(np.clip(int(float(self.table.item(i, 2).text())), 1, 1000))
+                av = int(np.clip(int(float(self.table.item(i, 1).text())), 1, 100000))
+                bw = int(np.clip(int(float(self.table.item(i, 2).text())), 1, 15000000))
                 out.append((pw, av, bw))
             except Exception:
                 continue
         return out
 
+    def _fill_table(self, schedule):
+        self.table.setRowCount(len(schedule))
+        for i, (pw, av, bw) in enumerate(schedule):
+            self.table.setItem(i, 0, QTableWidgetItem(f"{pw:g}"))
+            self.table.setItem(i, 1, QTableWidgetItem(str(int(av))))
+            self.table.setItem(i, 2, QTableWidgetItem(str(int(bw))))
+
+    def _modify_table(self):
+        from windows.dialogs import PowerScheduleDialog
+        try:
+            dlg = PowerScheduleDialog(self, self._schedule())
+            if dlg.exec_() and dlg.result_value:
+                self._fill_table(dlg.result_value)
+                self._log(f"Power schedule updated: {len(dlg.result_value)} point(s).")
+        except Exception as e:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Power schedule error",
+                                f"Could not apply the modified table:\n{e}")
+            self._log(f"✗ Power schedule error: {e}")
+
+    def _save_config(self):
+        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        from core.schedule_io import save_schedule
+        sched = self._schedule()
+        if not sched:
+            QMessageBox.warning(self, "Nothing to save", "The power table is empty."); return
+        path, _ = QFileDialog.getSaveFileName(self, "Save power config",
+                                              "power_schedule.json", "JSON config (*.json)")
+        if not path:
+            return
+        if not path.lower().endswith(".json"):
+            path += ".json"
+        try:
+            save_schedule(path, sched); self._log(f"Saved power config → {path}")
+        except Exception as e:
+            QMessageBox.warning(self, "Save failed", str(e))
+
+    def _load_config(self):
+        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        from core.schedule_io import load_schedule
+        path, _ = QFileDialog.getOpenFileName(self, "Load power config",
+                                              "", "JSON config (*.json);;All files (*)")
+        if not path:
+            return
+        try:
+            sched = load_schedule(path)
+            self._fill_table(sched); self._log(f"Loaded power config ({len(sched)} points) ← {path}")
+        except Exception as e:
+            QMessageBox.warning(self, "Load failed", str(e))
+            self._log(f"✗ Config load error: {e}")
+
+    def _edit_spans(self):
+        from windows.dialogs import ResonatorSpanDialog
+        from PyQt5.QtWidgets import QMessageBox
+        if not self._resonators:
+            QMessageBox.information(self, "No resonators",
+                                    "Load or receive resonators first."); return
+        dlg = ResonatorSpanDialog(self, self._resonators)
+        if not (dlg.exec_() and dlg.result_value):
+            return
+        for r in self._resonators:
+            span_hz = dlg.result_value.get(r.get("num"))
+            if not span_hz:
+                continue
+            center = float(r.get("center_hz", 0.5 * (r["fstart_hz"] + r["fstop_hz"])))
+            r["center_hz"] = center
+            r["fstart_hz"] = center - span_hz / 2.0
+            r["fstop_hz"] = center + span_hz / 2.0
+            r["span_mhz"] = span_hz / 1e6
+        self._refresh_res_list()
+        self._log("Updated resonator spans (centre unchanged).")
+
     def _checked_resonators(self):
-        chosen = []
-        for i in range(self.res_list.count()):
-            if self.res_list.item(i).checkState() == Qt.Checked:
-                chosen.append(self._resonators[i])
-        return chosen
+        # checked resonators within the current chip view
+        return [r for r in self._res_visible if r.get("_checked", True)]
 
     # ------------------------------------------------------------------
 
@@ -343,7 +477,9 @@ class PowerWindow(QMainWindow):
     def _on_busy(self, busy):
         self.btn_run.setEnabled(not busy and instrument_manager.pna_connected())
         for w in (self.cmb_mode, self.sp_pstart, self.sp_pstop, self.sp_pstep,
-                  self.sp_points, self.btn_gen, self.btn_rule, self.table):
+                  self.sp_points, self.btn_gen, self.btn_rule, self.table,
+                  self.btn_modify, self.btn_savecfg, self.btn_loadcfg,
+                  self.btn_spans, self.btn_loaddb):
             w.setEnabled(not busy)
 
     def _log(self, m):

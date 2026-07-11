@@ -27,7 +27,7 @@ import numpy as np
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox,
     QLabel, QDoubleSpinBox, QSpinBox, QPushButton, QListWidget, QListWidgetItem,
-    QTextEdit, QSplitter, QMessageBox,
+    QTextEdit, QSplitter, QMessageBox, QComboBox,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 
@@ -56,7 +56,8 @@ class QualityWindow(QMainWindow):
         self.setWindowTitle("3 · Quality Assessment")
         self.setMinimumSize(1180, 760)
         self._res: List[Dict] = []          # ordered resonators with state
-        self._free_nums: List[int] = []     # freed by Delete, reused next
+        self._visible: List[Dict] = []      # currently shown (filtered by chip)
+        self._free_nums: Dict[str, List[int]] = {}   # per-chip freed numbers
         self._worker = None
         self._remeasure_num: Optional[int] = None
         self._build_ui()
@@ -65,13 +66,14 @@ class QualityWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def load(self, confirmed: List[Dict]):
-        """Receive resonators from the span picker (state 'unmeasured')."""
-        self._res = []
+        """Receive resonators from the span picker (state 'unmeasured'). Multiple
+        chips accumulate — each call appends the newly-confirmed chip's set."""
         for r in confirmed:
             d = dict(r); d["state"] = "unmeasured"; d["fit"] = None
+            d.setdefault("chip", "")
             d.setdefault("span_mhz", abs(d["fstop_hz"] - d["fstart_hz"]) / 1e6)
             self._res.append(d)
-        self._free_nums = []
+        self._rebuild_chip_filter()
         self._refresh_list(); self._update_gate()
 
     # ------------------------------------------------------------------
@@ -104,6 +106,13 @@ class QualityWindow(QMainWindow):
         self.btn_load = QPushButton("Load from database…  (bypass wideband + quality)")
         self.btn_load.clicked.connect(self._load_db); L.addWidget(self.btn_load)
 
+        crow = QHBoxLayout()
+        crow.addWidget(QLabel("Chip"))
+        self.cmb_chip = QComboBox(); self.cmb_chip.addItem("All chips")
+        self.cmb_chip.currentIndexChanged.connect(lambda *_: (self._refresh_list(),
+                                                              self._select_first()))
+        crow.addWidget(self.cmb_chip, 1)
+        L.addLayout(crow)
         L.addWidget(QLabel("Resonators"))
         self.list = QListWidget(); self.list.currentRowChanged.connect(self._on_select)
         L.addWidget(self.list, 1)
@@ -142,18 +151,47 @@ class QualityWindow(QMainWindow):
     # numbering pool
     # ------------------------------------------------------------------
 
-    def _used_nums(self):
-        return {r["num"] for r in self._res if r.get("num") is not None}
+    def _used_nums(self, chip):
+        return {r["num"] for r in self._res
+                if r.get("num") is not None and (r.get("chip") or "") == chip}
 
-    def _assign_num(self, preferred=None):
-        used = self._used_nums()
+    def _assign_num(self, chip, preferred=None):
+        chip = chip or ""
+        used = self._used_nums(chip)
+        pool = self._free_nums.setdefault(chip, [])
         if preferred is not None and preferred not in used:
-            if preferred in self._free_nums:
-                self._free_nums.remove(preferred)
+            if preferred in pool:
+                pool.remove(preferred)
             return preferred
-        if self._free_nums:
-            return self._free_nums.pop(0)
+        if pool:
+            return pool.pop(0)
         return (max(used) + 1) if used else 1
+
+    def _rebuild_chip_filter(self):
+        chips = []
+        for r in self._res:
+            c = r.get("chip") or ""
+            if c not in chips:
+                chips.append(c)
+        cur = self.cmb_chip.currentText()
+        self.cmb_chip.blockSignals(True)
+        self.cmb_chip.clear(); self.cmb_chip.addItem("All chips")
+        for c in chips:
+            self.cmb_chip.addItem(c if c else "(unnamed)")
+        idx = self.cmb_chip.findText(cur)
+        self.cmb_chip.setCurrentIndex(idx if idx >= 0 else 0)
+        self.cmb_chip.blockSignals(False)
+
+    def _chip_filter(self):
+        """Return the chip string to show, or None for all chips."""
+        if self.cmb_chip.currentIndex() <= 0:
+            return None
+        txt = self.cmb_chip.currentText()
+        return "" if txt == "(unnamed)" else txt
+
+    def _label(self, r):
+        chip = r.get("chip") or ""
+        return f"{chip}_Res{r['num']}" if chip else f"Res {r['num']}"
 
     # ------------------------------------------------------------------
     # list / state
@@ -161,39 +199,48 @@ class QualityWindow(QMainWindow):
 
     def _refresh_list(self):
         cur = self.list.currentRow()
+        flt = self._chip_filter()
+        self._visible = [r for r in self._res
+                         if flt is None or (r.get("chip") or "") == flt]
         self.list.blockSignals(True); self.list.clear()
-        for r in self._res:
-            num = r["num"]; st = r.get("state", "unmeasured")
+        for r in self._visible:
+            st = r.get("state", "unmeasured")
             fit = r.get("fit") or {}
             if fit.get("ok"):
                 tag = f"fr={fit['fr']/1e9:.6f} GHz  Qi={format_q(fit['Qi'])}"
             else:
                 tag = f"{r.get('center_hz', 0)/1e9:.6f} GHz"
-            self.list.addItem(QListWidgetItem(f"Res {num}  ·  {tag}  ·  [{STATE_LABEL.get(st, st)}]"))
+            self.list.addItem(QListWidgetItem(
+                f"{self._label(r)}  ·  {tag}  ·  [{STATE_LABEL.get(st, st)}]"))
         self.list.blockSignals(False)
         if 0 <= cur < self.list.count():
             self.list.setCurrentRow(cur)
         self._update_gate()
 
+    def _select_first(self):
+        if self.list.count() and self.list.currentRow() < 0:
+            self.list.setCurrentRow(0)
+
     def _update_gate(self):
         n = len(self._res)
         decided = sum(1 for r in self._res if r["state"] in ("confirmed", "ignored"))
         confirmed = sum(1 for r in self._res if r["state"] == "confirmed")
-        self.lbl_summary.setText(f"{n} resonators · {confirmed} confirmed · "
-                                 f"{decided}/{n} decided · free #: {sorted(self._free_nums)}")
+        nchips = len({(r.get("chip") or "") for r in self._res})
+        self.lbl_summary.setText(f"{n} resonators · {nchips} chip(s) · "
+                                 f"{confirmed} confirmed · {decided}/{n} decided")
         ready = (n > 0 and decided == n and confirmed > 0 and not instrument_manager.busy)
         self.btn_continue.setEnabled(ready)
 
     def _current(self) -> Optional[Dict]:
         row = self.list.currentRow()
-        return self._res[row] if 0 <= row < len(self._res) else None
+        return self._visible[row] if 0 <= row < len(self._visible) else None
 
     def _on_select(self, row):
         r = self._current()
         if r is None:
             return
         if r.get("f_hz") is None or not len(r["f_hz"]):
-            self.lbl_head.setText(f"Res {r['num']} — not measured yet.")
+            self.lbl_head.setText(f"{self._label(r)} — not measured yet.")
             self.lbl_metrics.setText(""); self.fitplot.set_data([], [], []); return
         self._show(r)
 
@@ -202,12 +249,12 @@ class QualityWindow(QMainWindow):
         fit = r.get("fit") or {}
         self.fitplot.set_fit(fit)
         if fit.get("ok"):
-            self.lbl_head.setText(f"Res {r['num']} — fr = {fit['fr']/1e9:.6f} GHz  [{STATE_LABEL[r['state']]}]")
+            self.lbl_head.setText(f"{self._label(r)} — fr = {fit['fr']/1e9:.6f} GHz  [{STATE_LABEL[r['state']]}]")
             self.lbl_metrics.setText(
                 f"Qi = {format_q(fit['Qi'])}   Ql = {format_q(fit['Ql'])}   "
                 f"Qc = {format_q(fit['Qc'])}")
         else:
-            self.lbl_head.setText(f"Res {r['num']} — press Run fit (drag the window to the resonance if needed).")
+            self.lbl_head.setText(f"{self._label(r)} — press Run fit (drag the window to the resonance if needed).")
             self.lbl_metrics.setText(fit.get("error", "") if fit else "")
 
     # ------------------------------------------------------------------
@@ -220,7 +267,7 @@ class QualityWindow(QMainWindow):
                 "points": self.sp_points.value(), "trace": "S21"}
 
     def _run(self):
-        todo = [r for r in self._res if r.get("f_hz") is None or not len(r["f_hz"])]
+        todo = [r for r in self._visible if r.get("f_hz") is None or not len(r["f_hz"])]
         self._start_worker(todo, "Running quality sweep…")
 
     def _remeasure(self):
@@ -236,10 +283,10 @@ class QualityWindow(QMainWindow):
         r["fstart_hz"] = nv["fstart_hz"]
         r["fstop_hz"] = nv["fstop_hz"]
         r["span_mhz"] = nv["span_mhz"]
-        self._log(f"Res {r['num']}: new span {nv['span_mhz']:.3f} MHz "
+        self._log(f"{self._label(r)}: new span {nv['span_mhz']:.3f} MHz "
                   f"around {nv['center_hz']/1e9:.6f} GHz — re-measuring…")
         self._remeasure_num = r["num"]
-        self._start_worker([r], f"Re-measuring Res {r['num']} with new span…")
+        self._start_worker([r], f"Re-measuring {self._label(r)} with new span…")
 
     def _start_worker(self, subset, msg):
         if not instrument_manager.pna_connected():
@@ -268,8 +315,9 @@ class QualityWindow(QMainWindow):
             self._log("Stopping… (aborting the PNA sweep)")
 
     def _on_measured(self, item: dict):
-        num = item["num"]
-        r = next((x for x in self._res if x["num"] == num), None)
+        num = item["num"]; chip = item.get("chip") or ""
+        r = next((x for x in self._res
+                  if x["num"] == num and (x.get("chip") or "") == chip), None)
         if r is None:
             return
         r["f_hz"] = item["f_hz"]; r["mag_db"] = item["mag_db"]; r["phase_deg"] = item["phase_deg"]
@@ -280,9 +328,8 @@ class QualityWindow(QMainWindow):
         self._refresh_list()
         # surface the just-measured resonator so it can be analysed while the
         # remaining ones are still being swept
-        if self._current() is r or self.list.currentRow() < 0:
-            idx = self._res.index(r)
-            self.list.setCurrentRow(idx)
+        if r in self._visible and (self._current() is r or self.list.currentRow() < 0):
+            self.list.setCurrentRow(self._visible.index(r))
             self._show(r)
 
     def _on_finished(self, results):
@@ -328,7 +375,7 @@ class QualityWindow(QMainWindow):
                                    "Run a successful fit before confirming this resonator.")
             return
         r["state"] = "confirmed"; self._refresh_list()
-        self._log(f"✓ Res {r['num']} confirmed.")
+        self._log(f"✓ {self._label(r)} confirmed.")
 
     def _ignore(self):
         r = self._current()
@@ -336,13 +383,12 @@ class QualityWindow(QMainWindow):
             return
         if QMessageBox.question(
                 self, "Ignore resonator",
-                f"Ignore Res {r['num']}?\n\nIt will be SKIPPED in the power- and "
-                f"temperature-dependent runs, but its number {r['num']} stays "
-                f"reserved (not reused).",
+                f"Ignore {self._label(r)}?\n\nIt will be SKIPPED in the power- and "
+                f"temperature-dependent runs, but its number stays reserved.",
                 QMessageBox.Ok | QMessageBox.Cancel) != QMessageBox.Ok:
             return
         r["state"] = "ignored"; self._refresh_list()
-        self._log(f"Res {r['num']} ignored (number reserved/skipped).")
+        self._log(f"{self._label(r)} ignored (number reserved/skipped).")
 
     def _delete(self):
         r = self._current()
@@ -350,23 +396,28 @@ class QualityWindow(QMainWindow):
             return
         if QMessageBox.question(
                 self, "Delete resonator",
-                f"Delete Res {r['num']} from the workflow?\n\nThe saved run STAYS in "
-                f"the database. Number {r['num']} is FREED and will be given to the "
-                f"next resonator measured or loaded.",
+                f"Delete {self._label(r)} from the workflow?\n\nThe saved run STAYS in "
+                f"the database. Its number is FREED (reused within this chip).",
                 QMessageBox.Ok | QMessageBox.Cancel) != QMessageBox.Ok:
             return
-        num = r["num"]
+        num = r["num"]; chip = r.get("chip") or ""
         self._res.remove(r)
-        if num is not None and num not in self._free_nums:
-            self._free_nums.append(num); self._free_nums.sort()
-        self._log(f"Res {num} deleted from workflow; number {num} freed. (Run kept in DB.)")
-        self._refresh_list()
+        pool = self._free_nums.setdefault(chip, [])
+        if num is not None and num not in pool:
+            pool.append(num); pool.sort()
+        self._log(f"{chip + '_' if chip else ''}Res{num} deleted from workflow; number freed. (Run kept in DB.)")
+        self._rebuild_chip_filter(); self._refresh_list()
         self.lbl_head.setText("Select a resonator."); self.lbl_metrics.setText("")
         self.fitplot.set_data([], [], [])
 
     # ------------------------------------------------------------------
     # load from database
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _chip_from_name(name: str) -> str:
+        name = name or ""
+        return name.split("_Res")[0] if "_Res" in name else ""
 
     def _load_db(self):
         if instrument_manager.busy:
@@ -380,16 +431,17 @@ class QualityWindow(QMainWindow):
                     res = aio.run_as_resonator(db_path, rid)
                 except Exception as e:
                     self._log(f"✗ run {rid}: {e}"); continue
-                res["num"] = self._assign_num(res.get("num"))
+                chip = res.get("chip") or self._chip_from_name(res.get("name", ""))
+                res["chip"] = chip
+                res["num"] = self._assign_num(chip, res.get("num"))
                 res["z"] = s21_from_mag_phase(res["mag_db"], res["phase_deg"])
                 res["fit"] = fit_notch(res["f_hz"], res["z"])
                 res["state"] = "fitted" if res["fit"].get("ok") else "measured"
                 self._res.append(res); added += 1
             self._log(f"Loaded {added} quality run(s) from database. "
                       "Select each, Run fit / adjust, then Confirm / Ignore / Delete.")
-            self._refresh_list()
-            if self.list.currentRow() < 0 and self._res:
-                self.list.setCurrentRow(0)
+            self._rebuild_chip_filter(); self._refresh_list()
+            self._select_first()
 
     # ------------------------------------------------------------------
 
@@ -400,7 +452,8 @@ class QualityWindow(QMainWindow):
                 continue
             fit = r.get("fit") or {}
             chosen.append({
-                "num": r["num"], "center_hz": float(r["center_hz"]),
+                "num": r["num"], "chip": r.get("chip") or "",
+                "center_hz": float(r["center_hz"]),
                 "fstart_hz": float(r["fstart_hz"]), "fstop_hz": float(r["fstop_hz"]),
                 "span_mhz": float(r.get("span_mhz", 0)),
                 "fr": float(fit["fr"]) if fit.get("ok") else float(r["center_hz"]),

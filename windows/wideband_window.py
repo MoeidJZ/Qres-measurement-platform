@@ -21,7 +21,7 @@ import logging
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox,
     QLabel, QDoubleSpinBox, QSpinBox, QCheckBox, QComboBox, QPushButton,
-    QTextEdit, QSplitter,
+    QTextEdit, QSplitter, QLineEdit, QMessageBox,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 
@@ -63,6 +63,14 @@ class WidebandWindow(QMainWindow):
         left = QWidget()
         L = QVBoxLayout(left)
         L.setContentsMargins(12, 12, 12, 12)
+
+        chipgrp = QGroupBox("Chip / sample  (required)")
+        cg = QGridLayout(chipgrp)
+        self.le_chip = QLineEdit()
+        self.le_chip.setPlaceholderText("e.g. TaCN14_A  — set before scanning; change it for another chip")
+        self.le_chip.setText(str(settings.get("wideband.chip_name", "") or ""))
+        cg.addWidget(QLabel("Chip name"), 0, 0); cg.addWidget(self.le_chip, 0, 1)
+        L.addWidget(chipgrp)
 
         grp = QGroupBox("Sweep parameters")
         g = QGridLayout(grp)
@@ -216,6 +224,7 @@ class WidebandWindow(QMainWindow):
             "averages": self.sp_avg.value(),
             "trace": "S21",
             "sample_name": instrument_manager.sample_name,
+            "chip": self.le_chip.text().strip(),
             "inline_attenuation_db": settings.get("pna.inline_attenuation_db", 80),
             "ref_wait": self.chk_wait.isChecked(),
             "ref_label": self.cmb_ref.currentText(),
@@ -247,6 +256,13 @@ class WidebandWindow(QMainWindow):
         if instrument_manager.busy:
             self._log("Another measurement is running.")
             return
+        if not self.le_chip.text().strip():
+            QMessageBox.warning(self, "Chip name required",
+                                "Enter a chip / sample name before scanning. "
+                                "It labels every resonator and run for this chip.")
+            self.le_chip.setFocus()
+            return
+        settings.set("wideband.chip_name", self.le_chip.text().strip())
         p = self._collect_params()
         p["ref_wait"] = wait   # 'Wait & run' -> True, 'Run sweep' -> False
         self._persist(p)
@@ -347,10 +363,18 @@ class WidebandWindow(QMainWindow):
         freqs = self.plot.picked_frequencies_hz()
         if not freqs:
             return
+        chip = self.le_chip.text().strip()
+        if not chip:
+            QMessageBox.warning(self, "Chip name required",
+                                "Enter a chip / sample name before confirming picks.")
+            self.le_chip.setFocus()
+            return
+        settings.set("wideband.chip_name", chip)
+        self._last_result["chip"] = chip
         # remember for the next phase
         settings.set("resonator_picks_hz", freqs)
         self.picksConfirmed.emit(freqs, self._last_result)
-        self._log(f"Confirmed {len(freqs)} resonance(s). → Span picker (Phase 5).")
+        self._log(f"Confirmed {len(freqs)} resonance(s) for chip '{chip}'. → Span picker.")
 
     def _on_busy(self, busy: bool):
         # While a run is in progress, lock the parameter form but keep Stop/Run-now.

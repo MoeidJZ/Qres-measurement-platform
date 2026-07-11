@@ -6,6 +6,8 @@ Small reusable dialogs used across the connection flow.
 
 from __future__ import annotations
 
+import numpy as np
+
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QCheckBox,
     QPushButton, QDialogButtonBox, QDoubleSpinBox,
@@ -267,4 +269,213 @@ class ReSpanDialog(QDialog):
             "center_hz": 0.5 * (f0 + f1),
             "fstart_hz": f0, "fstop_hz": f1, "span_mhz": (f1 - f0) / 1e6,
         }
+        self.accept()
+
+
+class PowerScheduleDialog(QDialog):
+    """
+    Pop-out editor for the power schedule: an arbitrary, possibly non-linear list
+    of (power dBm, averages, IF bandwidth Hz) rows. Add / remove / duplicate /
+    sort rows, and save or load the whole plan as a JSON config that is shared
+    between the power- and temperature-dependent steps. On OK, ``result_value``
+    is the validated schedule (list of (power, averages, if_bw)).
+    """
+
+    def __init__(self, parent, schedule):
+        super().__init__(parent)
+        self.setWindowTitle("Modify power schedule")
+        self.setMinimumSize(560, 480)
+        self.result_value = None
+        from PyQt5.QtWidgets import (QTableWidget, QTableWidgetItem, QFileDialog,
+                                     QMessageBox, QAbstractItemView)
+        self._QTableWidgetItem = QTableWidgetItem
+        self._QFileDialog = QFileDialog
+        self._QMessageBox = QMessageBox
+
+        v = QVBoxLayout(self)
+        lab = QLabel("Each row is one measurement point. Powers need not be evenly "
+                     "spaced — add a special point (e.g. −60 dBm with its own averaging "
+                     "and IF bandwidth) anywhere in the list.")
+        lab.setWordWrap(True); lab.setStyleSheet(f"color:{theme.hx('subtext')};")
+        v.addWidget(lab)
+
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["Power (dBm)", "Averages", "IF bw (Hz)"])
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        v.addWidget(self.table, 1)
+        for row in (schedule or []):
+            self._append_row(*row)
+        if self.table.rowCount() == 0:
+            self._append_row(-30.0, 1, 1000)
+
+        row1 = QHBoxLayout()
+        for label, slot in (("Add row", self._add),
+                            ("Duplicate", self._duplicate),
+                            ("Remove selected", self._remove),
+                            ("Sort by power", self._sort),
+                            ("Clear", self._clear)):
+            btn = QPushButton(label); btn.clicked.connect(slot); row1.addWidget(btn)
+        v.addLayout(row1)
+
+        row2 = QHBoxLayout()
+        b_load = QPushButton("Load config…"); b_load.clicked.connect(self._load); row2.addWidget(b_load)
+        b_save = QPushButton("Save config…"); b_save.clicked.connect(self._save); row2.addWidget(b_save)
+        row2.addStretch()
+        v.addLayout(row2)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self._accept); bb.rejected.connect(self.reject)
+        v.addWidget(bb)
+
+    # ---- row helpers
+    def _append_row(self, p=-30.0, a=1, b=1000):
+        r = self.table.rowCount(); self.table.insertRow(r)
+        for c, val in enumerate((f"{float(p):g}", str(int(round(float(a)))), str(int(round(float(b)))))):
+            self.table.setItem(r, c, self._QTableWidgetItem(val))
+
+    def _add(self):
+        self._append_row()
+
+    def _duplicate(self):
+        r = self.table.currentRow()
+        if r < 0:
+            r = self.table.rowCount() - 1
+        if r < 0:
+            return self._append_row()
+        vals = [self.table.item(r, c).text() if self.table.item(r, c) else "" for c in range(3)]
+        self.table.insertRow(r + 1)
+        for c, val in enumerate(vals):
+            self.table.setItem(r + 1, c, self._QTableWidgetItem(val))
+
+    def _remove(self):
+        rows = sorted({ix.row() for ix in self.table.selectedIndexes()}, reverse=True)
+        if not rows and self.table.currentRow() >= 0:
+            rows = [self.table.currentRow()]
+        for r in rows:
+            self.table.removeRow(r)
+
+    def _clear(self):
+        self.table.setRowCount(0)
+
+    def _sort(self):
+        sched = self._read(validate=False)
+        sched.sort(key=lambda t: t[0])
+        self._fill(sched)
+
+    def _fill(self, sched):
+        self.table.setRowCount(0)
+        for row in sched:
+            self._append_row(*row)
+
+    # ---- read / validate
+    def _read(self, validate=True):
+        out, bad = [], []
+        for i in range(self.table.rowCount()):
+            try:
+                p = float(self.table.item(i, 0).text())
+                a = int(np.clip(int(round(float(self.table.item(i, 1).text()))), 1, 100000))
+                b = int(np.clip(int(round(float(self.table.item(i, 2).text()))), 1, 15000000))
+                out.append((round(p, 3), a, b))
+            except Exception:
+                bad.append(i + 1)
+        if validate and bad:
+            raise ValueError(f"Rows {', '.join(map(str, bad))} have invalid numbers.")
+        return out
+
+    def _load(self):
+        from core.schedule_io import load_schedule
+        path, _ = self._QFileDialog.getOpenFileName(self, "Load power schedule",
+                                                    "", "JSON config (*.json);;All files (*)")
+        if not path:
+            return
+        try:
+            self._fill(load_schedule(path))
+        except Exception as e:
+            self._QMessageBox.warning(self, "Load failed", str(e))
+
+    def _save(self):
+        from core.schedule_io import save_schedule
+        try:
+            sched = self._read(validate=True)
+        except Exception as e:
+            self._QMessageBox.warning(self, "Cannot save", str(e)); return
+        path, _ = self._QFileDialog.getSaveFileName(self, "Save power schedule",
+                                                    "power_schedule.json", "JSON config (*.json)")
+        if not path:
+            return
+        if not path.lower().endswith(".json"):
+            path += ".json"
+        try:
+            save_schedule(path, sched)
+        except Exception as e:
+            self._QMessageBox.warning(self, "Save failed", str(e))
+
+    def _accept(self):
+        try:
+            sched = self._read(validate=True)
+        except Exception as e:
+            self._QMessageBox.warning(self, "Invalid schedule", str(e)); return
+        if not sched:
+            self._QMessageBox.warning(self, "Invalid schedule", "The schedule is empty."); return
+        self.result_value = sched
+        self.accept()
+
+
+class ResonatorSpanDialog(QDialog):
+    """
+    Per-resonator frequency-span editor. Each resonator's span is shown in kHz;
+    editing it changes only the start/stop frequencies (the centre stays fixed).
+    On OK, ``result_value`` maps resonator number -> span in Hz.
+    """
+
+    def __init__(self, parent, resonators):
+        super().__init__(parent)
+        self.setWindowTitle("Edit per-resonator span (kHz)")
+        self.setMinimumSize(520, 420)
+        self.result_value = None
+        from PyQt5.QtWidgets import QTableWidget, QTableWidgetItem, QMessageBox
+        self._QMessageBox = QMessageBox
+        self._res = resonators
+
+        v = QVBoxLayout(self)
+        lab = QLabel("Adjust the measurement span for each resonator. Only the start "
+                     "and stop frequencies change — the centre frequency is preserved.")
+        lab.setWordWrap(True); lab.setStyleSheet(f"color:{theme.hx('subtext')};")
+        v.addWidget(lab)
+
+        self.table = QTableWidget(len(resonators), 3)
+        self.table.setHorizontalHeaderLabels(["Resonator", "Center (GHz)", "Span (kHz)"])
+        self.table.horizontalHeader().setStretchLastSection(True)
+        for i, r in enumerate(resonators):
+            center = float(r.get("center_hz", 0.5 * (r["fstart_hz"] + r["fstop_hz"])))
+            span_hz = abs(float(r["fstop_hz"]) - float(r["fstart_hz"]))
+            it_num = QTableWidgetItem(f"Res {r.get('num')}"); it_num.setFlags(Qt.ItemIsEnabled)
+            it_c = QTableWidgetItem(f"{center/1e9:.6f}"); it_c.setFlags(Qt.ItemIsEnabled)
+            it_s = QTableWidgetItem(f"{span_hz/1e3:.3f}")
+            self.table.setItem(i, 0, it_num)
+            self.table.setItem(i, 1, it_c)
+            self.table.setItem(i, 2, it_s)
+        v.addWidget(self.table, 1)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self._accept); bb.rejected.connect(self.reject)
+        v.addWidget(bb)
+
+    def _accept(self):
+        spans = {}
+        bad = []
+        for i, r in enumerate(self._res):
+            try:
+                span_khz = float(self.table.item(i, 2).text())
+                if span_khz <= 0:
+                    raise ValueError
+                spans[r.get("num")] = span_khz * 1e3
+            except Exception:
+                bad.append(i + 1)
+        if bad:
+            self._QMessageBox.warning(self, "Invalid span",
+                                      f"Rows {', '.join(map(str, bad))} have an invalid span.")
+            return
+        self.result_value = spans
         self.accept()

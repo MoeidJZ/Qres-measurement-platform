@@ -59,6 +59,7 @@ class SpanPickerWindow(QMainWindow):
     def load(self, picks_hz: List[float], wideband_result: dict):
         self._freq_ghz = np.asarray(wideband_result.get("freq_ghz", []), dtype=float)
         self._mag_db = np.asarray(wideband_result.get("mag_db", []), dtype=float)
+        self._chip = str(wideband_result.get("chip") or "")
         default_span = float(settings.get("span_picker.default_span_mhz", 2.0))
         self._res = []
         for f in sorted(picks_hz):
@@ -69,6 +70,7 @@ class SpanPickerWindow(QMainWindow):
                 "fstart_hz": c - default_span / 2 * 1e6,
                 "fstop_hz": c + default_span / 2 * 1e6,
                 "status": "pending",
+                "chip": self._chip,
             })
         self._renumber()
         self._refresh_list()
@@ -263,6 +265,7 @@ class SpanPickerWindow(QMainWindow):
     def _clean(r: Dict) -> Dict:
         return {
             "num": int(r["num"]),
+            "chip": str(r.get("chip") or ""),
             "center_hz": float(r["center_hz"]),
             "fstart_hz": float(min(r["fstart_hz"], r["fstop_hz"])),
             "fstop_hz": float(max(r["fstart_hz"], r["fstop_hz"])),

@@ -223,7 +223,8 @@ class WidebandWorker(QThread):
         f0 = float(p["start_hz"]) / 1e9
         f1 = float(p["stop_hz"]) / 1e9
         atten = int(p.get("inline_attenuation_db", 80))
-        meas_name = (f"{last_label}_Wide_{t_label}_{f0:.3f}to{f1:.3f}GHz_"
+        chip = str(p.get("chip") or last_label)
+        meas_name = (f"{chip}_Wide_{t_label}_{f0:.3f}to{f1:.3f}GHz_"
                      f"-{atten}dBInlineAttenuation")
 
         from qcodes.dataset import load_or_create_experiment, Measurement
@@ -352,11 +353,12 @@ class QualityWorker(QThread):
             if self._abort.is_set():
                 break
             num = r.get("num")
+            chip = _chip_prefix(r, last_label)
             f0 = float(r["fstart_hz"]); f1 = float(r["fstop_hz"])
-            self.progress.emit(f"Measuring Res {num} ({f0/1e9:.6f}–{f1/1e9:.6f} GHz)…")
+            self.progress.emit(f"Measuring {chip} Res {num} ({f0/1e9:.6f}–{f1/1e9:.6f} GHz)…")
             pna.start(f0); pna.stop(f1); pna.output(1)
 
-            meas_name = (f"{last_label}_Res{num}_Quality_{t_label}_"
+            meas_name = (f"{chip}_Res{num}_Quality_{t_label}_"
                          f"{f0/1e9:.6f}to{f1/1e9:.6f}GHz_{power:g}dBm")
             exp = load_or_create_experiment(experiment_name="Quality",
                                             sample_name=sample)
@@ -373,7 +375,7 @@ class QualityWorker(QThread):
                 ds.add_result((pna.power, pows), (pna.magnitude, mag), (pna.phase, phase))
                 run_id = ds.run_id
             item = {
-                "num": num, "center_hz": float(r["center_hz"]),
+                "num": num, "chip": r.get("chip"), "center_hz": float(r["center_hz"]),
                 "fstart_hz": f0, "fstop_hz": f1,
                 "f_hz": freq_axis,
                 "mag_db": np.array(mag, dtype=float),
@@ -395,6 +397,13 @@ class QualityWorker(QThread):
 # ===========================================================================
 # Shared per-resonator measurement routines (used by Power and Temperature)
 # ===========================================================================
+
+def _chip_prefix(r, fallback) -> str:
+    """Name prefix for a resonator's runs: its chip name if set, else the
+    session sample-name fallback. Keeps multi-chip runs unambiguous."""
+    c = r.get("chip")
+    return str(c) if c else str(fallback)
+
 
 def _meta(im, t_label_override=None):
     try:
@@ -425,7 +434,8 @@ def measure_resonator_spd(im, r, schedule, sched_map, points, trace, tag,
                     "measurement continues.")
     powers_asc = [s[0] for s in sorted(schedule, key=lambda s: s[0])]
 
-    meas_name = f"{last}_Res{num}_{tag}_SPD_{t_label}_{f0/1e9:.6f}to{f1/1e9:.6f}GHz"
+    chip = _chip_prefix(r, last)
+    meas_name = f"{chip}_Res{num}_{tag}_SPD_{t_label}_{f0/1e9:.6f}to{f1/1e9:.6f}GHz"
     exp = load_or_create_experiment(tag, sample_name=sample)
     meas = Measurement(exp=exp, station=im.station, name=meas_name)
     meas.register_parameter(pna.power)
@@ -452,7 +462,7 @@ def measure_resonator_spd(im, r, schedule, sched_map, points, trace, tag,
             ds.add_result((pna.power, pw), (pna.magnitude, mag), (pna.phase, phase))
             fit = fit_notch_auto(freq, s21_from_mag_phase(mag, phase))
             qi_curve.append((float(pw), fit.get("Qi"), fit.get("Qi_err")))
-            on_point({"num": num, "power_dbm": float(pw), "mode": "spd",
+            on_point({"num": num, "chip": r.get("chip"), "power_dbm": float(pw), "mode": "spd",
                       "Qi": fit.get("Qi"), "Qi_err": fit.get("Qi_err"),
                       "fr": fit.get("fr"), "fit_ok": fit.get("ok"),
                       "f_hz": freq, "mag_db": mag, "phase_deg": phase,
@@ -461,7 +471,7 @@ def measure_resonator_spd(im, r, schedule, sched_map, points, trace, tag,
                         + (f"Qi={fit['Qi']:.3g}" if fit.get('ok') else "fit failed"))
         run_id = ds.run_id
     _safe_pna(im)
-    return {"num": num, "mode": "spd", "run_id": run_id,
+    return {"num": num, "chip": r.get("chip"), "mode": "spd", "run_id": run_id,
             "qi_vs_power": qi_curve, "temp_k": t_k, "t_label": t_label}
 
 
@@ -508,7 +518,8 @@ def measure_resonator_hpd(im, r, schedule, sched_map, points, trace, reject, tag
     exp = load_or_create_experiment(tag, sample_name=sample)
     # one run_id for the whole resonator; frequency varies per power (each power
     # uses its own adaptive window), so frequency is stored per power.
-    meas_name = (f"{last}_Res{num}_{tag}_HPD_{t_label}_"
+    chip = _chip_prefix(r, last)
+    meas_name = (f"{chip}_Res{num}_{tag}_HPD_{t_label}_"
                  f"{orig_f0/1e9:.6f}to{orig_f1/1e9:.6f}GHz")
     meas = Measurement(exp=exp, station=im.station, name=meas_name)
     meas.register_custom_parameter("power", unit="dBm")
@@ -575,7 +586,7 @@ def measure_resonator_hpd(im, r, schedule, sched_map, points, trace, reject, tag
                 qi_curve.append((float(pw), None, None))
                 on_progress(f"  Res {num} @ {pw:g} dBm: fit failed; reusing previous seed.")
 
-            on_point({"num": num, "power_dbm": float(pw), "mode": "hpd",
+            on_point({"num": num, "chip": r.get("chip"), "power_dbm": float(pw), "mode": "hpd",
                       "Qi": fit.get("Qi"), "Qi_err": fit.get("Qi_err"),
                       "fr": fit.get("fr"), "Ql": fit.get("Ql"),
                       "theta0": fit.get("theta0"), "fit_ok": fit.get("ok"),
@@ -586,7 +597,7 @@ def measure_resonator_hpd(im, r, schedule, sched_map, points, trace, reject, tag
 
     _safe_pna(im)
     qi_curve.sort(key=lambda t: t[0])
-    return {"num": num, "mode": "hpd", "run_id": run_id, "run_ids": [run_id],
+    return {"num": num, "chip": r.get("chip"), "mode": "hpd", "run_id": run_id, "run_ids": [run_id],
             "qi_vs_power": qi_curve, "temp_k": t_k, "t_label": t_label}
 
 
