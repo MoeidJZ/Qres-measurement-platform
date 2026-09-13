@@ -601,6 +601,15 @@ def measure_resonator_hpd(im, r, schedule, sched_map, points, trace, reject, tag
             "qi_vs_power": qi_curve, "temp_k": t_k, "t_label": t_label}
 
 
+def _sched_for(r, default_schedule):
+    """Return (schedule, sched_map) for a resonator — its own custom power table
+    if one was assigned (r['_schedule']), else the default table."""
+    s = r.get("_schedule") or default_schedule
+    s = sorted(s, key=lambda x: x[0])
+    m = {round(float(pw), 3): (int(av), int(bw)) for pw, av, bw in s}
+    return s, m
+
+
 def _measure_one(im, r, schedule, sched_map, params, t_label, abort, on_point, on_progress):
     """Dispatch SPD/HPD for one resonator."""
     points = int(params["points"]); trace = params.get("trace", "S21")
@@ -639,13 +648,13 @@ class PowerWorker(QThread):
         try:
             if self.im.pna is None:
                 raise RuntimeError("PNA is not connected.")
-            schedule = sorted(self.p["schedule"], key=lambda s: s[0])
-            sched_map = {round(float(pw), 3): (int(av), int(bw)) for pw, av, bw in schedule}
+            default_schedule = sorted(self.p["schedule"], key=lambda s: s[0])
             results = []
             for r in self.resonators:
                 if self._abort.is_set():
                     break
-                res = _measure_one(self.im, r, schedule, sched_map, self.p, None,
+                sch, smap = _sched_for(r, default_schedule)
+                res = _measure_one(self.im, r, sch, smap, self.p, None,
                                    self._abort, self.point_measured.emit, self.progress.emit)
                 results.append(res)
                 self.res_finished.emit(res)
@@ -698,21 +707,40 @@ class TemperatureWorker(QThread):
             raise RuntimeError("Fridge is not connected — temperature control unavailable.")
 
         temps = list(p["temperatures_k"])
-        schedule = sorted(p["schedule"], key=lambda s: s[0])
-        sched_map = {round(float(pw), 3): (int(av), int(bw)) for pw, av, bw in schedule}
+        default_schedule = sorted(p["schedule"], key=lambda s: s[0])
         all_results = []
 
         for T in temps:
             if self._abort.is_set():
                 break
-            # ---- set & VERIFY the controller setpoint ---------------------
+            # ---- set & VERIFY the controller setpoint, with outer retries ---
             self.progress.emit(f"Setting target temperature {format_temp_label(T)} (verifying)…")
-            try:
-                confirmed = fridge.set_target_temperature(
-                    T, tol_k=float(p.get("target_tol_k", 1e-4)))
-            except Exception as e:
-                self.error.emit(f"Target temperature not verified at "
-                                f"{format_temp_label(T)}: {e}")
+            confirmed = None
+            last_err = None
+            for rnd in range(6):        # 1 initial round of 5 attempts + 5 more rounds
+                if self._abort.is_set():
+                    break
+                try:
+                    confirmed = fridge.set_target_temperature(
+                        T, tol_k=float(p.get("target_tol_k", 1e-4)))
+                    break
+                except Exception as e:
+                    last_err = e
+                    if rnd < 5:
+                        self.progress.emit(
+                            f"⚠ Controller did not accept {format_temp_label(T)} "
+                            f"(round {rnd+1}/6). Waiting 5 s and retrying…")
+                        for _ in range(50):     # abort-aware 5 s wait
+                            if self._abort.is_set():
+                                break
+                            time.sleep(0.1)
+            if self._abort.is_set():
+                break
+            if confirmed is None:
+                self.error.emit(
+                    f"Temperature control failed at {format_temp_label(T)}: the "
+                    f"controller could not be set after 6 rounds of retries "
+                    f"(5 attempts each, 5 s apart).\n\nLast error: {last_err}")
                 return
             self.progress.emit(f"✓ Controller confirmed setpoint {format_temp_label(confirmed)}. "
                                "Waiting for stability…")
@@ -742,7 +770,8 @@ class TemperatureWorker(QThread):
             for r in self.resonators:
                 if self._abort.is_set():
                     break
-                res = _measure_one(im, r, schedule, sched_map, p, t_label,
+                sch, smap = _sched_for(r, default_schedule)
+                res = _measure_one(im, r, sch, smap, p, t_label,
                                    self._abort, self.point_measured.emit, self.progress.emit)
                 res["target_k"] = float(T)
                 temp_results.append(res)

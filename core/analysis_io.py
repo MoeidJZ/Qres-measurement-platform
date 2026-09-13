@@ -245,6 +245,19 @@ def _safe_filename(name: str) -> str:
     return _re.sub(r'[<>:"/\\|?*]', "", name)
 
 
+def export_wideband_csv(export_dir: str, run_name: str,
+                        freq_hz, mag_db, phase_deg) -> str:
+    """Write a wideband scan (no fit) as <run_name>.csv:
+    frequency_Hz, magnitude_dB, phase_deg."""
+    os.makedirs(export_dir, exist_ok=True)
+    path = os.path.join(export_dir, _safe_filename(f"{run_name}.csv"))
+    cols = [np.asarray(freq_hz, float), np.asarray(mag_db, float),
+            np.asarray(phase_deg, float)]
+    np.savetxt(path, np.column_stack(cols), delimiter=",",
+               header="frequency_Hz,magnitude_dB,phase_deg", comments="")
+    return path
+
+
 def export_trace(export_dir: str, base_name: str, run_name: str, power_dbm,
                  freq_hz, mag_db, phase_deg, fit: Optional[dict] = None) -> str:
     """
@@ -270,26 +283,73 @@ def export_trace(export_dir: str, base_name: str, run_name: str, power_dbm,
     return path
 
 
-METRICS_HEADER = ("run_id,run_name,resonator,temperature,power_dBm,"
-                  "fr_Hz,Qi,Qi_err,Qc,Ql,phi_rad,n_photons,ok\n")
+METRICS_HEADER = ("run_id,chip_res,temperature_mK,power_idx,freq_idx_start,freq_idx_end,"
+                  "power_dBm,photon_count,Qi,Qc,Ql,fr,phi,tau,Qi_err,Qc_err,Ql_err,fr_err,"
+                  "measurement_type\n")
+
+
+def _num(x):
+    """Full-precision, round-trippable number for CSV (blank for None/NaN).
+    Whole numbers are written without a trailing .0 (used for indices)."""
+    if x is None:
+        return ""
+    try:
+        xf = float(x)
+    except Exception:
+        return str(x)
+    if not np.isfinite(xf):
+        return ""
+    if xf == int(xf) and abs(xf) < 1e15:
+        return str(int(xf))
+    return repr(xf)
+
+
+def _numf(x):
+    """Like _num but always keeps a float form (e.g. -100.0), for power/temperature."""
+    if x is None:
+        return ""
+    try:
+        xf = float(x)
+    except Exception:
+        return str(x)
+    if not np.isfinite(xf):
+        return ""
+    return repr(xf)
+
+
+def _temp_mK(temp_tag) -> str:
+    m = re.match(r"(-?\d+(?:\.\d+)?)(mK|K)$", str(temp_tag or ""))
+    if not m:
+        return ""
+    v = float(m.group(1))
+    return _numf(v if m.group(2) == "mK" else v * 1000.0)
 
 
 def append_metrics(export_dir: str, base_name: str, run_id, run_name,
-                   power_dbm, fit: dict) -> str:
-    """Append one fit-result row to <base>_fitting_parameters.csv."""
+                   power_idx, freq_idx_start, freq_idx_end, power_dbm,
+                   fit: dict, measurement_type: str = "single_power") -> str:
+    """Append one fit-result row (per power) to <base>.csv, matching the
+    standard column schema (run_id, chip_res, temperature_mK, power_idx,
+    freq_idx_start/end, power_dBm, photon_count, Q's, fr, phi, tau, errors,
+    measurement_type)."""
     os.makedirs(export_dir, exist_ok=True)
-    path = os.path.join(export_dir, f"{base_name}_fitting_parameters.csv")
+    path = os.path.join(export_dir, f"{base_name}.csv")
     tags = parse_run_name(run_name)
+    chip = tags.get("chip", "")
+    chip_res = f"{chip}_{tags['res']}" if chip else tags["res"]
     new = not os.path.exists(path)
     with open(path, "a", encoding="utf-8") as fh:
         if new:
             fh.write(METRICS_HEADER)
         fh.write(",".join(str(x) for x in [
-            run_id, run_name, tags["res"], tags["temp"],
-            (f"{power_dbm:g}" if power_dbm == power_dbm else ""),
-            _fmt(fit.get("fr")), _fmt(fit.get("Qi")), _fmt(fit.get("Qi_err")),
-            _fmt(fit.get("Qc")), _fmt(fit.get("Ql")), _fmt(fit.get("phi")),
-            _fmt(fit.get("photons")), bool(fit.get("ok")),
+            run_id, chip_res, _temp_mK(tags["temp"]),
+            _num(power_idx), _num(freq_idx_start), _num(freq_idx_end),
+            _numf(power_dbm), _num(fit.get("photons")),
+            _num(fit.get("Qi")), _num(fit.get("Qc")), _num(fit.get("Ql")),
+            _num(fit.get("fr")), _num(fit.get("phi")), _num(fit.get("tau", 0)),
+            _num(fit.get("Qi_err")), _num(fit.get("Qc_err")),
+            _num(fit.get("Ql_err")), _num(fit.get("fr_err")),
+            measurement_type,
         ]) + "\n")
     return path
 

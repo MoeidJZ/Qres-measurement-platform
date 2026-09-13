@@ -26,7 +26,8 @@ from typing import List, Dict
 import numpy as np
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QListWidget,
-    QListWidgetItem, QPushButton, QDoubleSpinBox, QGroupBox, QSplitter,
+    QListWidgetItem, QPushButton, QDoubleSpinBox, QSpinBox, QGroupBox, QSplitter,
+    QMessageBox,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 
@@ -50,6 +51,8 @@ class SpanPickerWindow(QMainWindow):
         self._mag_db = np.array([])
         self._res: List[Dict] = []
         self._current = -1
+        self._chip = ""
+        self._manual = False        # True once the user hand-edits a resonator number
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -60,6 +63,7 @@ class SpanPickerWindow(QMainWindow):
         self._freq_ghz = np.asarray(wideband_result.get("freq_ghz", []), dtype=float)
         self._mag_db = np.asarray(wideband_result.get("mag_db", []), dtype=float)
         self._chip = str(wideband_result.get("chip") or "")
+        self._manual = False
         default_span = float(settings.get("span_picker.default_span_mhz", 2.0))
         self._res = []
         for f in sorted(picks_hz):
@@ -78,6 +82,10 @@ class SpanPickerWindow(QMainWindow):
             self.list.setCurrentRow(0)
 
     def _renumber(self):
+        # auto-number by frequency only until the user hand-edits a number;
+        # after that, keep the user's chosen numbers intact.
+        if self._manual:
+            return
         self._res.sort(key=lambda r: r["center_hz"])
         for i, r in enumerate(self._res, start=1):
             r["num"] = i
@@ -99,6 +107,12 @@ class SpanPickerWindow(QMainWindow):
         L.addWidget(self.list, 1)
         act = QGroupBox("This resonator")
         ag = QVBoxLayout(act)
+        nrow = QHBoxLayout()
+        nrow.addWidget(QLabel("Res #"))
+        self.sp_num = QSpinBox(); self.sp_num.setRange(1, 999999)
+        self.sp_num.valueChanged.connect(self._on_num_changed)
+        nrow.addWidget(self.sp_num); nrow.addStretch()
+        ag.addLayout(nrow)
         self.btn_confirm = QPushButton("Confirm span"); self.btn_confirm.setObjectName("success")
         self.btn_confirm.clicked.connect(self._confirm_current)
         self.btn_ignore = QPushButton("Ignore (keep, don't measure)")
@@ -183,11 +197,31 @@ class SpanPickerWindow(QMainWindow):
         mask = (self._freq_ghz >= lo) & (self._freq_ghz <= hi)
         return self._freq_ghz[mask], self._mag_db[mask]
 
+    def _on_num_changed(self, val):
+        if not (0 <= self._current < len(self._res)):
+            return
+        r = self._res[self._current]
+        if int(val) == int(r["num"]):
+            return
+        # warn (but allow) if this number is already used by another resonator
+        dup = any(i != self._current and int(x["num"]) == int(val)
+                  for i, x in enumerate(self._res))
+        r["num"] = int(val)
+        self._manual = True
+        self.lbl_head.setText(
+            f"Res {r['num']} — center {r['center_hz']/1e9:.6f} GHz  [{r['status']}]")
+        self._refresh_list()
+        if dup:
+            QMessageBox.information(self, "Duplicate number",
+                                   f"Res {val} is now used by more than one resonator. "
+                                   "Give them distinct numbers before continuing.")
+
     def _on_select(self, row: int):
         self._current = row
         if not (0 <= row < len(self._res)):
             return
         r = self._res[row]
+        self.sp_num.blockSignals(True); self.sp_num.setValue(int(r["num"])); self.sp_num.blockSignals(False)
         self.sp_span.setValue(r["span_mhz"])
         fz, mz = self._slice(r["center_hz"], r["span_mhz"])
         self.lbl_head.setText(

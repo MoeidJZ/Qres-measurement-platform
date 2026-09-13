@@ -44,3 +44,30 @@ def load_schedule(path: str) -> Schedule:
     if not out:
         raise ValueError("No valid schedule rows found in file.")
     return out
+
+
+def save_temperatures(path: str, temps_k, unit: str = "mK") -> None:
+    """Save a temperature table. Stored in the chosen display unit."""
+    scale = 1e3 if unit == "mK" else 1.0
+    vals = [float(t) * scale for t in temps_k]     # K -> display unit
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({"kind": "qres_temperature_schedule", "version": 1,
+                   "unit": unit, "temperatures": vals}, fh, indent=2)
+
+
+def load_temperatures(path: str):
+    """Load a temperature table -> (list_of_K, unit)."""
+    with open(path, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+    unit = data.get("unit", "mK") if isinstance(data, dict) else "mK"
+    raw = data.get("temperatures", []) if isinstance(data, dict) else data
+    scale = 1e-3 if unit == "mK" else 1.0
+    out = []
+    for t in raw:
+        try:
+            out.append(round(float(t) * scale, 9))
+        except Exception:
+            continue
+    if not out:
+        raise ValueError("No valid temperatures found in file.")
+    return out, unit

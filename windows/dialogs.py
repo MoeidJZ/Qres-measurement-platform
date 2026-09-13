@@ -204,8 +204,8 @@ class ReSpanDialog(QDialog):
         import numpy as np
 
         v = QVBoxLayout(self)
-        lab = QLabel("Drag the shaded region around the resonance, or type a span and "
-                     "press “Re-view”. The centre follows the region.")
+        lab = QLabel("Type a span (kHz→MHz) and press “Re-view” to increase or "
+                     "decrease it, or drag the shaded region. The centre follows the region.")
         lab.setStyleSheet(f"color:{theme.hx('subtext')};"); lab.setWordWrap(True)
         v.addWidget(lab)
 
@@ -424,23 +424,24 @@ class PowerScheduleDialog(QDialog):
 
 class ResonatorSpanDialog(QDialog):
     """
-    Per-resonator frequency-span editor. Each resonator's span is shown in kHz;
-    editing it changes only the start/stop frequencies (the centre stays fixed).
-    On OK, ``result_value`` maps resonator number -> span in Hz.
+    Per-resonator frequency editor. Both the centre (resonance) frequency in GHz
+    and the span in kHz can be edited by hand. On OK, ``result_value`` maps
+    resonator number -> {'center_hz': .., 'span_hz': ..}; the start/stop are
+    recomputed as centre ± span/2.
     """
 
     def __init__(self, parent, resonators):
         super().__init__(parent)
-        self.setWindowTitle("Edit per-resonator span (kHz)")
-        self.setMinimumSize(520, 420)
+        self.setWindowTitle("Edit per-resonator frequency & span")
+        self.setMinimumSize(560, 440)
         self.result_value = None
         from PyQt5.QtWidgets import QTableWidget, QTableWidgetItem, QMessageBox
         self._QMessageBox = QMessageBox
         self._res = resonators
 
         v = QVBoxLayout(self)
-        lab = QLabel("Adjust the measurement span for each resonator. Only the start "
-                     "and stop frequencies change — the centre frequency is preserved.")
+        lab = QLabel("Type the resonance (centre) frequency in GHz and the span in kHz "
+                     "for each resonator. Start/stop are set to centre ± span/2.")
         lab.setWordWrap(True); lab.setStyleSheet(f"color:{theme.hx('subtext')};")
         v.addWidget(lab)
 
@@ -450,8 +451,10 @@ class ResonatorSpanDialog(QDialog):
         for i, r in enumerate(resonators):
             center = float(r.get("center_hz", 0.5 * (r["fstart_hz"] + r["fstop_hz"])))
             span_hz = abs(float(r["fstop_hz"]) - float(r["fstart_hz"]))
-            it_num = QTableWidgetItem(f"Res {r.get('num')}"); it_num.setFlags(Qt.ItemIsEnabled)
-            it_c = QTableWidgetItem(f"{center/1e9:.6f}"); it_c.setFlags(Qt.ItemIsEnabled)
+            chip = r.get("chip") or ""
+            head = f"{chip}_Res{r.get('num')}" if chip else f"Res {r.get('num')}"
+            it_num = QTableWidgetItem(head); it_num.setFlags(Qt.ItemIsEnabled)
+            it_c = QTableWidgetItem(f"{center/1e9:.6f}")
             it_s = QTableWidgetItem(f"{span_hz/1e3:.3f}")
             self.table.setItem(i, 0, it_num)
             self.table.setItem(i, 1, it_c)
@@ -463,19 +466,152 @@ class ResonatorSpanDialog(QDialog):
         v.addWidget(bb)
 
     def _accept(self):
-        spans = {}
+        out = {}
         bad = []
         for i, r in enumerate(self._res):
             try:
+                center_hz = float(self.table.item(i, 1).text()) * 1e9
                 span_khz = float(self.table.item(i, 2).text())
-                if span_khz <= 0:
+                if span_khz <= 0 or center_hz <= 0:
                     raise ValueError
-                spans[r.get("num")] = span_khz * 1e3
+                out[r.get("num")] = {"center_hz": center_hz, "span_hz": span_khz * 1e3}
             except Exception:
                 bad.append(i + 1)
         if bad:
-            self._QMessageBox.warning(self, "Invalid span",
-                                      f"Rows {', '.join(map(str, bad))} have an invalid span.")
+            self._QMessageBox.warning(self, "Invalid values",
+                                      f"Rows {', '.join(map(str, bad))} have an invalid "
+                                      "centre or span.")
             return
-        self.result_value = spans
+        self.result_value = out
+        self.accept()
+
+
+class TemperatureTableDialog(QDialog):
+    """
+    Editable temperature table (values in the chosen unit). Add / remove / sort
+    rows and save or load the list as a JSON config. On OK, ``result_value`` is
+    the list of temperatures (floats, in the dialog's unit) and ``unit`` holds
+    'mK' or 'K'.
+    """
+
+    def __init__(self, parent, temps_in_unit, unit="mK"):
+        super().__init__(parent)
+        self.setWindowTitle("Modify temperature table")
+        self.setMinimumSize(420, 460)
+        self.result_value = None
+        self.unit = unit
+        from PyQt5.QtWidgets import (QTableWidget, QTableWidgetItem, QFileDialog,
+                                     QMessageBox, QAbstractItemView, QComboBox)
+        self._QTableWidgetItem = QTableWidgetItem
+        self._QFileDialog = QFileDialog
+        self._QMessageBox = QMessageBox
+
+        v = QVBoxLayout(self)
+        urow = QHBoxLayout(); urow.addWidget(QLabel("Unit"))
+        self.cmb_unit = QComboBox(); self.cmb_unit.addItems(["mK", "K"])
+        self.cmb_unit.setCurrentText(unit); urow.addWidget(self.cmb_unit); urow.addStretch()
+        v.addLayout(urow)
+
+        self.table = QTableWidget(0, 1)
+        self.table.setHorizontalHeaderLabels(["Temperature"])
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        v.addWidget(self.table, 1)
+        for t in (temps_in_unit or []):
+            self._append(t)
+        if self.table.rowCount() == 0:
+            self._append(20.0)
+
+        row1 = QHBoxLayout()
+        for label, slot in (("Add", self._add), ("Remove", self._remove),
+                            ("Sort", self._sort), ("Clear", lambda: self.table.setRowCount(0))):
+            b = QPushButton(label); b.clicked.connect(slot); row1.addWidget(b)
+        v.addLayout(row1)
+        row2 = QHBoxLayout()
+        bl = QPushButton("Load…"); bl.clicked.connect(self._load); row2.addWidget(bl)
+        bs = QPushButton("Save…"); bs.clicked.connect(self._save); row2.addWidget(bs)
+        row2.addStretch(); v.addLayout(row2)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self._accept); bb.rejected.connect(self.reject)
+        v.addWidget(bb)
+
+    def _append(self, t):
+        r = self.table.rowCount(); self.table.insertRow(r)
+        self.table.setItem(r, 0, self._QTableWidgetItem(f"{float(t):g}"))
+
+    def _add(self):
+        self._append(20.0)
+
+    def _remove(self):
+        rows = sorted({ix.row() for ix in self.table.selectedIndexes()}, reverse=True)
+        if not rows and self.table.currentRow() >= 0:
+            rows = [self.table.currentRow()]
+        for r in rows:
+            self.table.removeRow(r)
+
+    def _read(self):
+        out, bad = [], []
+        for i in range(self.table.rowCount()):
+            try:
+                out.append(float(self.table.item(i, 0).text()))
+            except Exception:
+                bad.append(i + 1)
+        if bad:
+            raise ValueError(f"Rows {', '.join(map(str, bad))} are not valid numbers.")
+        return out
+
+    def _sort(self):
+        try:
+            vals = sorted(self._read())
+        except Exception as e:
+            self._QMessageBox.warning(self, "Cannot sort", str(e)); return
+        self.table.setRowCount(0)
+        for t in vals:
+            self._append(t)
+
+    def _load(self):
+        from core.schedule_io import load_temperatures
+        path, _ = self._QFileDialog.getOpenFileName(self, "Load temperature table",
+                                                    "", "JSON config (*.json);;All files (*)")
+        if not path:
+            return
+        try:
+            temps_k, unit = load_temperatures(path)
+            self.cmb_unit.setCurrentText(unit)
+            scale = 1e3 if unit == "mK" else 1.0
+            self.table.setRowCount(0)
+            for tk in temps_k:
+                self._append(tk * scale)
+        except Exception as e:
+            self._QMessageBox.warning(self, "Load failed", str(e))
+
+    def _save(self):
+        from core.schedule_io import save_temperatures
+        try:
+            vals = self._read()
+        except Exception as e:
+            self._QMessageBox.warning(self, "Cannot save", str(e)); return
+        unit = self.cmb_unit.currentText()
+        scale = 1e-3 if unit == "mK" else 1.0
+        path, _ = self._QFileDialog.getSaveFileName(self, "Save temperature table",
+                                                    "temperature_table.json", "JSON config (*.json)")
+        if not path:
+            return
+        if not path.lower().endswith(".json"):
+            path += ".json"
+        try:
+            save_temperatures(path, [v * scale for v in vals], unit)
+        except Exception as e:
+            self._QMessageBox.warning(self, "Save failed", str(e))
+
+    def _accept(self):
+        try:
+            vals = self._read()
+        except Exception as e:
+            self._QMessageBox.warning(self, "Invalid table", str(e)); return
+        if not vals:
+            self._QMessageBox.warning(self, "Invalid table", "The table is empty."); return
+        self.unit = self.cmb_unit.currentText()
+        self.result_value = vals
         self.accept()

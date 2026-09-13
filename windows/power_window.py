@@ -49,6 +49,8 @@ class PowerWindow(QMainWindow):
         self.setMinimumSize(1180, 760)
         self._resonators: List[Dict] = []
         self._res_visible: List[Dict] = []
+        self._schedules = {"__all__": None}   # target key -> schedule (per-resonator override)
+        self._sched_target = "__all__"
         self._worker = None
         self._curves: Dict[int, Dict] = {}   # num -> {'powers':[], 'qis':[], 'curve':PlotDataItem}
         self._build_ui()
@@ -60,7 +62,34 @@ class PowerWindow(QMainWindow):
             r.setdefault("chip", "")
             r.setdefault("_checked", True)
         self._rebuild_chip_filter()
+        self._rebuild_sched_targets()
         self._refresh_res_list()
+
+    def _res_key(self, r):
+        return f"{r.get('chip') or ''}|{r['num']}"
+
+    def _rebuild_sched_targets(self):
+        cur = self.cmb_sched_target.currentData()
+        self.cmb_sched_target.blockSignals(True)
+        self.cmb_sched_target.clear()
+        self.cmb_sched_target.addItem("All resonators", "__all__")
+        for r in self._resonators:
+            chip = r.get("chip") or ""
+            label = f"{chip}_Res{r['num']}" if chip else f"Res {r['num']}"
+            self.cmb_sched_target.addItem(f"Only {label}", self._res_key(r))
+        idx = self.cmb_sched_target.findData(cur) if cur else 0
+        self.cmb_sched_target.setCurrentIndex(idx if idx >= 0 else 0)
+        self.cmb_sched_target.blockSignals(False)
+
+    def _on_sched_target_changed(self, *_):
+        # save the table under the previously-selected target, then load the new one
+        self._schedules[self._sched_target] = self._schedule()
+        self._sched_target = self.cmb_sched_target.currentData() or "__all__"
+        sched = self._schedules.get(self._sched_target)
+        if sched is None:
+            base = self._schedules.get("__all__")
+            sched = list(base) if base else self._schedule()
+        self._fill_table(sched)
 
     def _res_label(self, r):
         chip = r.get("chip") or ""
@@ -186,6 +215,12 @@ class PowerWindow(QMainWindow):
         L.addWidget(rule)
 
         # schedule table
+        strow = QHBoxLayout()
+        strow.addWidget(QLabel("Power table for:"))
+        self.cmb_sched_target = QComboBox(); self.cmb_sched_target.addItem("All resonators", "__all__")
+        self.cmb_sched_target.currentIndexChanged.connect(self._on_sched_target_changed)
+        strow.addWidget(self.cmb_sched_target, 1)
+        L.addLayout(strow)
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["Power (dBm)", "Averages", "IF bw (Hz)"])
         self.table.horizontalHeader().setStretchLastSection(True)
@@ -213,7 +248,7 @@ class PowerWindow(QMainWindow):
         rrow = QHBoxLayout()
         self.btn_loaddb = QPushButton("Load resonator(s) from DB…")
         self.btn_loaddb.clicked.connect(self._load_from_db)
-        self.btn_spans = QPushButton("Edit spans (kHz)…")
+        self.btn_spans = QPushButton("Edit freq/span…")
         self.btn_spans.clicked.connect(self._edit_spans)
         rrow.addWidget(self.btn_loaddb); rrow.addWidget(self.btn_spans)
         L.addLayout(rrow)
@@ -363,16 +398,16 @@ class PowerWindow(QMainWindow):
         if not (dlg.exec_() and dlg.result_value):
             return
         for r in self._resonators:
-            span_hz = dlg.result_value.get(r.get("num"))
-            if not span_hz:
+            nv = dlg.result_value.get(r.get("num"))
+            if not nv:
                 continue
-            center = float(r.get("center_hz", 0.5 * (r["fstart_hz"] + r["fstop_hz"])))
+            center = float(nv["center_hz"]); span_hz = float(nv["span_hz"])
             r["center_hz"] = center
             r["fstart_hz"] = center - span_hz / 2.0
             r["fstop_hz"] = center + span_hz / 2.0
             r["span_mhz"] = span_hz / 1e6
         self._refresh_res_list()
-        self._log("Updated resonator spans (centre unchanged).")
+        self._log("Updated resonator centre/span.")
 
     def _checked_resonators(self):
         # checked resonators within the current chip view
@@ -386,9 +421,15 @@ class PowerWindow(QMainWindow):
         if instrument_manager.busy:
             return
         resonators = self._checked_resonators()
-        schedule = self._schedule()
-        if not resonators or not schedule:
+        # persist the current table under the active target, then resolve schedules
+        self._schedules[self._sched_target] = self._schedule()
+        default = self._schedules.get("__all__") or self._schedule()
+        if not resonators or not default:
             self._log("Need at least one resonator and one power point."); return
+        for r in resonators:
+            custom = self._schedules.get(self._res_key(r))
+            r["_schedule"] = list(custom) if custom else None
+        schedule = default
         settings.remember("power", {
             "mode_hpd": 1 if self._is_hpd() else 0,
             "p_start": self.sp_pstart.value(), "p_stop": self.sp_pstop.value(),
@@ -479,7 +520,7 @@ class PowerWindow(QMainWindow):
         for w in (self.cmb_mode, self.sp_pstart, self.sp_pstop, self.sp_pstep,
                   self.sp_points, self.btn_gen, self.btn_rule, self.table,
                   self.btn_modify, self.btn_savecfg, self.btn_loadcfg,
-                  self.btn_spans, self.btn_loaddb):
+                  self.btn_spans, self.btn_loaddb, self.cmb_sched_target):
             w.setEnabled(not busy)
 
     def _log(self, m):

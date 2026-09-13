@@ -91,6 +91,16 @@ class ResonatorFitView(QWidget):
 
     # ------------------------------------------------------------------
 
+    def export_magnitude_png(self, path: str, width: int = 1600):
+        """Export the |S21| magnitude panel to a PNG image."""
+        from pyqtgraph.exporters import ImageExporter
+        exporter = ImageExporter(self.mag.plotItem)
+        try:
+            exporter.parameters()["width"] = int(width)
+        except Exception:
+            pass
+        exporter.export(path)
+
     def set_data(self, freq_hz, mag_db, phase_deg):
         self._freq = np.asarray(freq_hz, float)
         mag = np.asarray(mag_db, float)
@@ -143,6 +153,10 @@ class ResonatorFitView(QWidget):
                              f"({(hi-lo)/1e6:.3f} MHz)")
         if emit:
             self._emit_range()
+
+    def set_region_visible(self, visible: bool):
+        for reg in (self.region_mag, self.region_pha):
+            reg.setVisible(bool(visible))
 
     def set_region_movable(self, movable: bool):
         """Disable/enable dragging the fit region on the plots."""

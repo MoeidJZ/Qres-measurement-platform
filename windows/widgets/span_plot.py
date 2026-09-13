@@ -66,16 +66,25 @@ class SpanPlot(QWidget):
         self._mag_db = np.asarray(mag_db, dtype=float)
         self.curve.setData(self._freq_ghz, self._mag_db)
         self.center_line.setPos(center_hz / 1e9)
-        if self._freq_ghz.size:
+        has_data = self._freq_ghz.size > 0
+        lo = hi = None
+        if has_data:
             lo, hi = float(self._freq_ghz[0]), float(self._freq_ghz[-1])
-            if region_hz is None:
-                a, b = lo + (hi - lo) * 0.15, hi - (hi - lo) * 0.15
-            else:
-                a, b = region_hz[0] / 1e9, region_hz[1] / 1e9
-            self.region.setBounds([lo, hi])
-            self.region.setRegion([a, b])
-            self.plot.setXRange(lo, hi)
-            self.plot.enableAutoRange(axis="y")
+        if region_hz is not None:
+            a, b = region_hz[0] / 1e9, region_hz[1] / 1e9
+        elif has_data:
+            a, b = lo + (hi - lo) * 0.15, hi - (hi - lo) * 0.15
+        else:
+            return
+        # let the selected region exceed the measured trace, so the span can be
+        # increased (not just decreased) — the view expands to include it
+        vlo = min(lo, a) if has_data else a
+        vhi = max(hi, b) if has_data else b
+        pad = (vhi - vlo) * 0.02 or 1e-6
+        self.region.setBounds([vlo - pad, vhi + pad])
+        self.region.setRegion([a, b])
+        self.plot.setXRange(vlo - pad, vhi + pad)
+        self.plot.enableAutoRange(axis="y")
 
     def get_span_hz(self) -> Tuple[float, float]:
         lo, hi = self.region.getRegion()

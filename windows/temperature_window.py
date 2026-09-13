@@ -44,6 +44,9 @@ class TemperatureWindow(QMainWindow):
         self.setMinimumSize(1220, 800)
         self._resonators: List[Dict] = []
         self._res_visible: List[Dict] = []
+        self._schedules = {"__all__": None}
+        self._sched_target = "__all__"
+        self._temp_list_k = None      # custom temperature table (K) if set, else use vector
         self._worker = None
         self._curves: Dict[str, Dict] = {}
         self._build_ui()
@@ -53,7 +56,32 @@ class TemperatureWindow(QMainWindow):
         self._resonators = [dict(r) for r in resonators]
         for r in self._resonators:
             r.setdefault("chip", ""); r.setdefault("_checked", True)
-        self._rebuild_chip_filter(); self._refresh_res_list()
+        self._rebuild_chip_filter(); self._rebuild_sched_targets(); self._refresh_res_list()
+
+    def _res_key(self, r):
+        return f"{r.get('chip') or ''}|{r['num']}"
+
+    def _rebuild_sched_targets(self):
+        cur = self.cmb_sched_target.currentData()
+        self.cmb_sched_target.blockSignals(True)
+        self.cmb_sched_target.clear()
+        self.cmb_sched_target.addItem("All resonators", "__all__")
+        for r in self._resonators:
+            chip = r.get("chip") or ""
+            label = f"{chip}_Res{r['num']}" if chip else f"Res {r['num']}"
+            self.cmb_sched_target.addItem(f"Only {label}", self._res_key(r))
+        idx = self.cmb_sched_target.findData(cur) if cur else 0
+        self.cmb_sched_target.setCurrentIndex(idx if idx >= 0 else 0)
+        self.cmb_sched_target.blockSignals(False)
+
+    def _on_sched_target_changed(self, *_):
+        self._schedules[self._sched_target] = self._schedule()
+        self._sched_target = self.cmb_sched_target.currentData() or "__all__"
+        sched = self._schedules.get(self._sched_target)
+        if sched is None:
+            base = self._schedules.get("__all__")
+            sched = list(base) if base else self._schedule()
+        self._fill_table(sched)
 
     def _res_label(self, r):
         chip = r.get("chip") or ""
@@ -156,6 +184,11 @@ class TemperatureWindow(QMainWindow):
         for w in (self.sp_tstart, self.sp_tstop, self.sp_tstep):
             w.valueChanged.connect(self._update_temps_label)
         self.cmb_tunit.currentIndexChanged.connect(self._update_temps_label)
+        ttrow = QHBoxLayout()
+        self.btn_temp_table = QPushButton("Modify temperatures…"); self.btn_temp_table.clicked.connect(self._modify_temps)
+        self.btn_temp_clear = QPushButton("Use range"); self.btn_temp_clear.clicked.connect(self._use_range_temps)
+        ttrow.addWidget(self.btn_temp_table); ttrow.addWidget(self.btn_temp_clear); ttrow.addStretch()
+        t.addLayout(ttrow, 3, 0, 1, 4)
         L.addWidget(tg)
 
         # stability
@@ -211,6 +244,12 @@ class TemperatureWindow(QMainWindow):
         r.addWidget(self.btn_rule, 2, 0, 1, 4)
         L.addWidget(rg)
 
+        strow = QHBoxLayout()
+        strow.addWidget(QLabel("Power table for:"))
+        self.cmb_sched_target = QComboBox(); self.cmb_sched_target.addItem("All resonators", "__all__")
+        self.cmb_sched_target.currentIndexChanged.connect(self._on_sched_target_changed)
+        strow.addWidget(self.cmb_sched_target, 1)
+        L.addLayout(strow)
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["Power (dBm)", "Averages", "IF bw (Hz)"])
         self.table.horizontalHeader().setStretchLastSection(True)
@@ -238,7 +277,7 @@ class TemperatureWindow(QMainWindow):
         rrow = QHBoxLayout()
         self.btn_loaddb = QPushButton("Load resonator(s) from DB…")
         self.btn_loaddb.clicked.connect(self._load_from_db)
-        self.btn_spans = QPushButton("Edit spans (kHz)…")
+        self.btn_spans = QPushButton("Edit freq/span…")
         self.btn_spans.clicked.connect(self._edit_spans)
         rrow.addWidget(self.btn_loaddb); rrow.addWidget(self.btn_spans)
         L.addLayout(rrow)
@@ -280,6 +319,8 @@ class TemperatureWindow(QMainWindow):
         return 1e-3 if self.cmb_tunit.currentText() == "mK" else 1.0
 
     def _temps_k(self):
+        if self._temp_list_k:
+            return list(self._temp_list_k)
         a, b, s = self.sp_tstart.value(), self.sp_tstop.value(), self.sp_tstep.value()
         lo, hi = min(a, b), max(a, b)
         n = int(round((hi - lo) / s)) + 1
@@ -288,9 +329,28 @@ class TemperatureWindow(QMainWindow):
             vals = vals[::-1]
         return vals
 
+    def _modify_temps(self):
+        from windows.dialogs import TemperatureTableDialog
+        unit = self.cmb_tunit.currentText()
+        scale = 1e3 if unit == "mK" else 1.0
+        cur = [t * scale for t in self._temps_k()]     # current temps in display unit
+        dlg = TemperatureTableDialog(self, cur, unit)
+        if dlg.exec_() and dlg.result_value:
+            u = dlg.unit; sc = 1e-3 if u == "mK" else 1.0
+            self._temp_list_k = [round(v * sc, 9) for v in dlg.result_value]
+            self.cmb_tunit.setCurrentText(u)
+            self._update_temps_label()
+            self._log(f"Custom temperature table set: {len(self._temp_list_k)} point(s).")
+
+    def _use_range_temps(self):
+        self._temp_list_k = None
+        self._update_temps_label()
+        self._log("Using Start/Stop/Step temperature range.")
+
     def _update_temps_label(self):
         ts = self._temps_k()
-        self.lbl_temps.setText(f"{len(ts)} temps: " +
+        prefix = "custom · " if self._temp_list_k else ""
+        self.lbl_temps.setText(f"{prefix}{len(ts)} temps: " +
                                ", ".join(format_temp_label(x) for x in ts[:6]) +
                                (" …" if len(ts) > 6 else ""))
 
@@ -399,16 +459,16 @@ class TemperatureWindow(QMainWindow):
         if not (dlg.exec_() and dlg.result_value):
             return
         for r in self._resonators:
-            span_hz = dlg.result_value.get(r.get("num"))
-            if not span_hz:
+            nv = dlg.result_value.get(r.get("num"))
+            if not nv:
                 continue
-            center = float(r.get("center_hz", 0.5 * (r["fstart_hz"] + r["fstop_hz"])))
+            center = float(nv["center_hz"]); span_hz = float(nv["span_hz"])
             r["center_hz"] = center
             r["fstart_hz"] = center - span_hz / 2.0
             r["fstop_hz"] = center + span_hz / 2.0
             r["span_mhz"] = span_hz / 1e6
         self._refresh_res_list()
-        self._log("Updated resonator spans (centre unchanged).")
+        self._log("Updated resonator centre/span.")
 
     def _checked_resonators(self):
         return [r for r in self._res_visible if r.get("_checked", True)]
@@ -423,10 +483,14 @@ class TemperatureWindow(QMainWindow):
         if instrument_manager.busy:
             return
         resonators = self._checked_resonators()
-        schedule = self._schedule()
+        self._schedules[self._sched_target] = self._schedule()
+        schedule = self._schedules.get("__all__") or self._schedule()
         temps = self._temps_k()
         if not (resonators and schedule and temps):
             self._log("Need resonators, a power table, and temperatures."); return
+        for r in resonators:
+            custom = self._schedules.get(self._res_key(r))
+            r["_schedule"] = list(custom) if custom else None
         settings.remember("temperature", {
             "t_start": self.sp_tstart.value(), "t_stop": self.sp_tstop.value(),
             "t_step": self.sp_tstep.value(), "t_unit": self.cmb_tunit.currentText(),
@@ -513,6 +577,8 @@ class TemperatureWindow(QMainWindow):
         instrument_manager.set_busy(False)
         self.btn_run.setEnabled(True); self.btn_stop.setEnabled(False)
         self._log("✗ " + msg.splitlines()[-1]); logger.error(msg)
+        from PyQt5.QtWidgets import QMessageBox
+        QMessageBox.critical(self, "Temperature-dependent run aborted", msg)
 
     def _on_busy(self, busy):
         self.btn_run.setEnabled(not busy and instrument_manager.pna_connected())
@@ -520,7 +586,8 @@ class TemperatureWindow(QMainWindow):
                   self.cmb_tunit, self.chk_reverse, self.sp_pstart, self.sp_pstop,
                   self.sp_pstep, self.sp_points, self.btn_gen, self.btn_rule, self.table,
                   self.btn_modify, self.btn_savecfg, self.btn_loadcfg,
-                  self.btn_spans, self.btn_loaddb):
+                  self.btn_spans, self.btn_loaddb, self.cmb_sched_target,
+                  self.btn_temp_table, self.btn_temp_clear):
             w.setEnabled(not busy)
 
     def _log(self, m):
