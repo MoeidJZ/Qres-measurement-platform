@@ -21,7 +21,7 @@ from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox,
     QLabel, QDoubleSpinBox, QSpinBox, QComboBox, QCheckBox, QPushButton,
     QListWidget, QListWidgetItem, QTableWidget, QTableWidgetItem, QTextEdit,
-    QSplitter,
+    QSplitter, QScrollArea, QAbstractItemView,
 )
 from PyQt5.QtCore import Qt
 
@@ -127,6 +127,26 @@ class TemperatureWindow(QMainWindow):
         if 0 <= row < len(self._res_visible):
             self._res_visible[row]["_checked"] = (item.checkState() == Qt.Checked)
 
+    def _remove_selected(self):
+        from PyQt5.QtWidgets import QMessageBox
+        rows = [self.res_list.row(it) for it in self.res_list.selectedItems()]
+        targets = [self._res_visible[r] for r in rows if 0 <= r < len(self._res_visible)]
+        if not targets:
+            QMessageBox.information(self, "Nothing selected",
+                                   "Select one or more resonators in the list to remove them "
+                                   "(click a row; Ctrl/Shift-click for several).")
+            return
+        # remove by identity so equal-looking dicts aren't dropped by mistake
+        self._resonators = [r for r in self._resonators
+                            if not any(r is t for t in targets)]
+        for t in targets:
+            self._schedules.pop(self._res_key(t), None)   # drop any per-resonator power table
+        if self._sched_target not in ("__all__",) and \
+                self._sched_target not in {self._res_key(r) for r in self._resonators}:
+            self._sched_target = "__all__"
+        self._rebuild_chip_filter(); self._rebuild_sched_targets(); self._refresh_res_list()
+        self._log(f"Removed {len(targets)} resonator(s) from the list.")
+
     def _load_from_db(self):
         dlg = QualityRunPicker(self, single=False)
         if not (dlg.exec_() and dlg.result_value):
@@ -164,6 +184,14 @@ class TemperatureWindow(QMainWindow):
         root = QWidget(); outer = QVBoxLayout(root); self.setCentralWidget(root)
         split = QSplitter(Qt.Horizontal); outer.addWidget(split, 1)
         left = QWidget(); L = QVBoxLayout(left); L.setContentsMargins(10, 10, 10, 10)
+        # the control column is tall; keep it inside a vertical scroll area so it
+        # stays usable on shorter screens instead of being clipped by the window.
+        left_scroll = QScrollArea()
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setWidget(left)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        left_scroll.setFrameShape(QScrollArea.NoFrame)
+        left_scroll.setMinimumWidth(460)
         b = settings.block("temperature")
 
         # temperature vector
@@ -264,7 +292,7 @@ class TemperatureWindow(QMainWindow):
             trow.addWidget(x)
         L.addLayout(trow)
 
-        L.addWidget(QLabel("Resonators to run"))
+        L.addWidget(QLabel("Resonators to run  (check = include · select rows to remove)"))
         crow = QHBoxLayout()
         crow.addWidget(QLabel("Chip"))
         self.cmb_chip = QComboBox(); self.cmb_chip.addItem("All chips")
@@ -272,6 +300,7 @@ class TemperatureWindow(QMainWindow):
         crow.addWidget(self.cmb_chip, 1)
         L.addLayout(crow)
         self.res_list = QListWidget(); self.res_list.setMaximumHeight(90)
+        self.res_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.res_list.itemChanged.connect(self._on_res_item_changed)
         L.addWidget(self.res_list)
         rrow = QHBoxLayout()
@@ -279,7 +308,9 @@ class TemperatureWindow(QMainWindow):
         self.btn_loaddb.clicked.connect(self._load_from_db)
         self.btn_spans = QPushButton("Edit freq/span…")
         self.btn_spans.clicked.connect(self._edit_spans)
-        rrow.addWidget(self.btn_loaddb); rrow.addWidget(self.btn_spans)
+        self.btn_remove = QPushButton("Remove selected"); self.btn_remove.setObjectName("danger")
+        self.btn_remove.clicked.connect(self._remove_selected)
+        rrow.addWidget(self.btn_loaddb); rrow.addWidget(self.btn_spans); rrow.addWidget(self.btn_remove)
         L.addLayout(rrow)
 
         brow = QHBoxLayout()
@@ -289,7 +320,7 @@ class TemperatureWindow(QMainWindow):
         self.btn_stop.setEnabled(False); self.btn_stop.clicked.connect(self._stop); brow.addWidget(self.btn_stop)
         L.addLayout(brow)
         self.log = QTextEdit(); self.log.setReadOnly(True); self.log.setMaximumHeight(110); L.addWidget(self.log)
-        split.addWidget(left)
+        split.addWidget(left_scroll)
 
         # right
         right = QWidget(); R = QVBoxLayout(right); R.setContentsMargins(10, 10, 10, 10)
@@ -586,7 +617,8 @@ class TemperatureWindow(QMainWindow):
                   self.cmb_tunit, self.chk_reverse, self.sp_pstart, self.sp_pstop,
                   self.sp_pstep, self.sp_points, self.btn_gen, self.btn_rule, self.table,
                   self.btn_modify, self.btn_savecfg, self.btn_loadcfg,
-                  self.btn_spans, self.btn_loaddb, self.cmb_sched_target,
+                  self.btn_spans, self.btn_loaddb, self.btn_remove,
+                  self.cmb_sched_target,
                   self.btn_temp_table, self.btn_temp_clear):
             w.setEnabled(not busy)
 

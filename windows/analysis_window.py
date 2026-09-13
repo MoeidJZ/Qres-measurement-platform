@@ -21,7 +21,7 @@ from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QComboBox, QDoubleSpinBox, QSpinBox, QSlider, QFileDialog,
     QInputDialog, QMessageBox, QSplitter, QGroupBox, QGridLayout, QShortcut,
-    QApplication, QAbstractSpinBox, QLineEdit, QTextEdit,
+    QApplication, QAbstractSpinBox, QLineEdit, QTextEdit, QCheckBox,
 )
 from PyQt5.QtGui import QKeySequence
 from PyQt5.QtCore import Qt, QEvent
@@ -116,6 +116,14 @@ class AnalysisWindow(QMainWindow):
         self.lbl_export.setWordWrap(True)
         self.lbl_export.setStyleSheet("font-size:11px;")
         e.addWidget(self.lbl_export)
+        # The fitting parameters (…_fitting_parameters.csv) are always written.
+        # The per-power trace CSV (frequency · mag · phase · fitted magnitude) is
+        # optional — tick this to also save the data + fit alongside the params.
+        self.chk_export_trace = QCheckBox("Also save trace data + fit (per-power CSV)")
+        self.chk_export_trace.setChecked(bool(settings.get("analysis.export_trace_data", True)))
+        self.chk_export_trace.toggled.connect(
+            lambda v: settings.set("analysis.export_trace_data", bool(v)))
+        e.addWidget(self.chk_export_trace)
         self.btn_export = QPushButton("Save this fit  (Ctrl+W)"); self.btn_export.clicked.connect(self._primary_export)
         e.addWidget(self.btn_export)
         self.btn_export_all = QPushButton("Fit && export all powers")
@@ -143,7 +151,7 @@ class AnalysisWindow(QMainWindow):
     def _set_enabled(self, on):
         for w in (self.cmb_power, self.btn_prev, self.btn_next, self.sl_lo, self.sl_hi,
                   self.sp_atten, self.sp_sigma, self.btn_reset,
-                  self.btn_export, self.btn_export_all):
+                  self.btn_export, self.btn_export_all, self.chk_export_trace):
             w.setEnabled(on)
 
     def _install_hotkeys(self):
@@ -256,7 +264,8 @@ class AnalysisWindow(QMainWindow):
         self.btn_export.setText("Export data (CSV)" if wide else "Save this fit  (Ctrl+W)")
         self.btn_export_all.setText("Export image (PNG)" if wide else "Fit && export all powers")
         # fit-only controls are meaningless for a wideband scan
-        for w in (self.sl_lo, self.sl_hi, self.sp_atten, self.sp_sigma, self.btn_reset):
+        for w in (self.sl_lo, self.sl_hi, self.sp_atten, self.sp_sigma, self.btn_reset,
+                  self.chk_export_trace):
             w.setEnabled(not wide)
         self.view.set_region_visible(not wide)
 
@@ -442,13 +451,17 @@ class AnalysisWindow(QMainWindow):
         i0, i1 = self.sl_lo.value(), self.sl_hi.value()
         pidx = max(self.cmb_power.currentIndex(), 0)
         chip_dbm = (pw + atten) if pw == pw else float("nan")
+        save_trace = self.chk_export_trace.isChecked()
         try:
-            aio.export_trace(self.export_dir, self.base_name, self._loaded["name"],
-                             pw, freq, mag, phase, fit)
+            if save_trace:
+                aio.export_trace(self.export_dir, self.base_name, self._loaded["name"],
+                                 pw, freq, mag, phase, fit)
             d = aio.append_metrics(self.export_dir, self.base_name,
                                    self._loaded.get("run_id"), self._loaded["name"],
                                    pidx, i0, i1, chip_dbm, fit, self._measurement_type())
-            self.statusBar().showMessage(f"Saved metrics → {d}", 6000)
+            msg = (f"Saved fit parameters + trace data → {d}" if save_trace
+                   else f"Saved fit parameters → {d}")
+            self.statusBar().showMessage(msg, 6000)
         except Exception as ex:
             QMessageBox.critical(self, "Export error", str(ex))
 
@@ -458,6 +471,7 @@ class AnalysisWindow(QMainWindow):
         atten = self.sp_atten.value(); settings.set("analysis.attenuation_db", atten)
         i0v, i1v = self.sl_lo.value(), self.sl_hi.value()
         mtype = self._measurement_type()
+        save_trace = self.chk_export_trace.isChecked()
         powers = self._loaded["powers"]
         n = 0
         # highest power first (matches the standard export ordering)
@@ -474,12 +488,14 @@ class AnalysisWindow(QMainWindow):
             chip_dbm = (pw + atten) if pw == pw else float("nan")
             add_photons(fit, chip_dbm)
             try:
-                aio.export_trace(self.export_dir, self.base_name, self._loaded["name"],
-                                 pw, freq, mag, phase, fit)
+                if save_trace:
+                    aio.export_trace(self.export_dir, self.base_name, self._loaded["name"],
+                                     pw, freq, mag, phase, fit)
                 aio.append_metrics(self.export_dir, self.base_name,
                                    self._loaded.get("run_id"), self._loaded["name"],
                                    idx, i0, i1, chip_dbm, fit, mtype)
                 n += 1
             except Exception:
                 logger.exception("export failed @ %s", pw)
-        self.statusBar().showMessage(f"Exported {n} power row(s) → {self.base_name}.csv", 6000)
+        tail = " (params + trace data)" if save_trace else " (params only)"
+        self.statusBar().showMessage(f"Exported {n} power row(s) → {self.base_name}.csv{tail}", 6000)

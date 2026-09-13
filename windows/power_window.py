@@ -26,6 +26,7 @@ from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox,
     QLabel, QDoubleSpinBox, QSpinBox, QComboBox, QPushButton, QListWidget,
     QListWidgetItem, QTableWidget, QTableWidgetItem, QTextEdit, QSplitter,
+    QAbstractItemView,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 
@@ -137,6 +138,26 @@ class PowerWindow(QMainWindow):
         if 0 <= row < len(self._res_visible):
             self._res_visible[row]["_checked"] = (item.checkState() == Qt.Checked)
 
+    def _remove_selected(self):
+        from PyQt5.QtWidgets import QMessageBox
+        rows = [self.res_list.row(it) for it in self.res_list.selectedItems()]
+        targets = [self._res_visible[r] for r in rows if 0 <= r < len(self._res_visible)]
+        if not targets:
+            QMessageBox.information(self, "Nothing selected",
+                                   "Select one or more resonators in the list to remove them "
+                                   "(click a row; Ctrl/Shift-click for several).")
+            return
+        # remove by identity so equal-looking dicts aren't dropped by mistake
+        self._resonators = [r for r in self._resonators
+                            if not any(r is t for t in targets)]
+        for t in targets:
+            self._schedules.pop(self._res_key(t), None)   # drop any per-resonator power table
+        if self._sched_target not in ("__all__",) and \
+                self._sched_target not in {self._res_key(r) for r in self._resonators}:
+            self._sched_target = "__all__"
+        self._rebuild_chip_filter(); self._rebuild_sched_targets(); self._refresh_res_list()
+        self._log(f"Removed {len(targets)} resonator(s) from the list.")
+
     def _load_from_db(self):
         dlg = QualityRunPicker(self, single=False)
         if not (dlg.exec_() and dlg.result_value):
@@ -241,8 +262,9 @@ class PowerWindow(QMainWindow):
         self.cmb_chip.currentIndexChanged.connect(lambda *_: self._refresh_res_list())
         crow.addWidget(self.cmb_chip, 1)
         L.addLayout(crow)
-        L.addWidget(QLabel("Resonators to run"))
+        L.addWidget(QLabel("Resonators to run  (check = include · select rows to remove)"))
         self.res_list = QListWidget(); self.res_list.setMaximumHeight(120)
+        self.res_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.res_list.itemChanged.connect(self._on_res_item_changed)
         L.addWidget(self.res_list)
         rrow = QHBoxLayout()
@@ -250,7 +272,9 @@ class PowerWindow(QMainWindow):
         self.btn_loaddb.clicked.connect(self._load_from_db)
         self.btn_spans = QPushButton("Edit freq/span…")
         self.btn_spans.clicked.connect(self._edit_spans)
-        rrow.addWidget(self.btn_loaddb); rrow.addWidget(self.btn_spans)
+        self.btn_remove = QPushButton("Remove selected"); self.btn_remove.setObjectName("danger")
+        self.btn_remove.clicked.connect(self._remove_selected)
+        rrow.addWidget(self.btn_loaddb); rrow.addWidget(self.btn_spans); rrow.addWidget(self.btn_remove)
         L.addLayout(rrow)
 
         brow = QHBoxLayout()
@@ -520,7 +544,8 @@ class PowerWindow(QMainWindow):
         for w in (self.cmb_mode, self.sp_pstart, self.sp_pstop, self.sp_pstep,
                   self.sp_points, self.btn_gen, self.btn_rule, self.table,
                   self.btn_modify, self.btn_savecfg, self.btn_loadcfg,
-                  self.btn_spans, self.btn_loaddb, self.cmb_sched_target):
+                  self.btn_spans, self.btn_loaddb, self.btn_remove,
+                  self.cmb_sched_target):
             w.setEnabled(not busy)
 
     def _log(self, m):
