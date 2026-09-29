@@ -258,10 +258,40 @@ def export_wideband_csv(export_dir: str, run_name: str,
     return path
 
 
+def _write_ragged_csv(path: str, columns) -> None:
+    """Write named columns of possibly different lengths to a CSV.
+
+    columns is a list of (header, array) pairs. The file has as many rows as the
+    longest column; any column that is shorter (e.g. the fitted trace, which only
+    spans the fit range) leaves its trailing cells EMPTY rather than padded with
+    zeros. Values are written full precision and round-trippable; non-finite
+    entries (NaN/inf) are written as empty cells too.
+    """
+    names = [c[0] for c in columns]
+    arrays = [np.asarray(c[1], float).ravel() for c in columns]
+    nrows = max((a.size for a in arrays), default=0)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(",".join(names) + "\n")
+        for r in range(nrows):
+            cells = []
+            for a in arrays:
+                if r < a.size and np.isfinite(a[r]):
+                    cells.append(repr(float(a[r])))
+                else:
+                    cells.append("")
+            fh.write(",".join(cells) + "\n")
+
+
 def export_trace(export_dir: str, base_name: str, run_name: str, power_dbm,
                  freq_hz, mag_db, phase_deg, fit: Optional[dict] = None) -> str:
     """
-    Write one trace to <base>_<Res>_<T>_<P>.csv (frequency, mag, phase[, sim]).
+    Write one trace to <base>_<Res>_<T>_<P>.csv. Columns:
+        frequency_Hz, magnitude_dB, phase_deg
+        [, frequency_sim_Hz, magnitude_sim_dB, phase_sim_deg]
+    The fitted (sim) columns are appended when a successful fit is provided. They
+    span only the fit range, so they are generally shorter than the raw trace;
+    their trailing cells are left blank (never zero-padded). Magnitudes are in dB
+    and phases in degrees for both the raw and fitted columns.
     Returns the file path.
     """
     os.makedirs(export_dir, exist_ok=True)
@@ -271,15 +301,28 @@ def export_trace(export_dir: str, base_name: str, run_name: str, power_dbm,
     fname = _safe_filename("_".join(p for p in parts if p) + ".csv")
     path = os.path.join(export_dir, fname)
 
-    cols = [np.asarray(freq_hz, float), np.asarray(mag_db, float),
-            np.asarray(phase_deg, float)]
-    header = "frequency_Hz,magnitude_dB,phase_deg"
-    if fit and fit.get("ok") and fit.get("mag_sim_db") is not None \
-            and len(fit["mag_sim_db"]) == len(freq_hz):
-        cols.append(np.asarray(fit["mag_sim_db"], float))
-        header += ",magnitude_sim_dB"
-    np.savetxt(path, np.column_stack(cols), delimiter=",", header=header,
-               comments="")
+    columns = [
+        ("frequency_Hz", np.asarray(freq_hz, float)),
+        ("magnitude_dB", np.asarray(mag_db, float)),
+        ("phase_deg", np.asarray(phase_deg, float)),
+    ]
+
+    if fit and fit.get("ok"):
+        f_sim = fit.get("f_sim_hz")
+        m_sim = fit.get("mag_sim_db")
+        p_sim = fit.get("phase_sim_deg")
+        if f_sim is not None and m_sim is not None and p_sim is not None:
+            f_sim = np.asarray(f_sim, float).ravel()
+            m_sim = np.asarray(m_sim, float).ravel()
+            p_sim = np.asarray(p_sim, float).ravel()
+            if f_sim.size and f_sim.size == m_sim.size == p_sim.size:
+                columns += [
+                    ("frequency_sim_Hz", f_sim),
+                    ("magnitude_sim_dB", m_sim),
+                    ("phase_sim_deg", p_sim),
+                ]
+
+    _write_ragged_csv(path, columns)
     return path
 
 
