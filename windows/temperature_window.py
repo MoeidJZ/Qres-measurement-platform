@@ -8,6 +8,13 @@ confirm it matches* (the fix for the setpoint/target mismatch), the loop waits
 for stability, then a full power sweep runs (SPD or HPD, same machinery as the
 power step). Every temperature produces its own run id(s), with the temperature
 encoded in each run name.
+
+HPD: powers above "HPD from ≤ X dBm" use linear sweeps; HPD from X down, seeded
+from the lowest linear power's fit. If the seed check is on, right after Run
+(before the first temperature is set) every resonator is measured once at its
+seed power and you tick, in one window, which resonators may use HPD. That
+choice holds for every temperature, re-seeding from each temperature's own
+linear fit. No answer within the timeout → all resonators stay linear.
 """
 
 from __future__ import annotations
@@ -21,7 +28,7 @@ from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox,
     QLabel, QDoubleSpinBox, QSpinBox, QComboBox, QCheckBox, QPushButton,
     QListWidget, QListWidgetItem, QTableWidget, QTableWidgetItem, QTextEdit,
-    QSplitter, QScrollArea, QAbstractItemView,
+    QSplitter,
 )
 from PyQt5.QtCore import Qt
 
@@ -30,6 +37,10 @@ from core.settings import settings
 from core.measure_workers import TemperatureWorker, format_temp_label
 from core.fitting import format_q, fit_notch, s21_from_mag_phase
 from windows.dialogs import QualityRunPicker
+from windows.hpd_controls import (
+    HPDStartControls, SeedDialogHost, SWEEP_COL, confirm_hpd_run,
+    setup_sweep_column, update_sweep_column,
+)
 from core import analysis_io as aio
 from core import theme
 
@@ -37,7 +48,7 @@ logger = logging.getLogger(__name__)
 pg.setConfigOptions(antialias=True, background=None, foreground="#cdd6f4")
 
 
-class TemperatureWindow(QMainWindow):
+class TemperatureWindow(SeedDialogHost, QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("5 · Temperature- & Power-Dependent Measurement")
@@ -48,6 +59,7 @@ class TemperatureWindow(QMainWindow):
         self._sched_target = "__all__"
         self._temp_list_k = None      # custom temperature table (K) if set, else use vector
         self._worker = None
+        self._seed_dlg = None
         self._curves: Dict[str, Dict] = {}
         self._build_ui()
         instrument_manager.on_busy_changed(self._on_busy)
@@ -127,26 +139,6 @@ class TemperatureWindow(QMainWindow):
         if 0 <= row < len(self._res_visible):
             self._res_visible[row]["_checked"] = (item.checkState() == Qt.Checked)
 
-    def _remove_selected(self):
-        from PyQt5.QtWidgets import QMessageBox
-        rows = [self.res_list.row(it) for it in self.res_list.selectedItems()]
-        targets = [self._res_visible[r] for r in rows if 0 <= r < len(self._res_visible)]
-        if not targets:
-            QMessageBox.information(self, "Nothing selected",
-                                   "Select one or more resonators in the list to remove them "
-                                   "(click a row; Ctrl/Shift-click for several).")
-            return
-        # remove by identity so equal-looking dicts aren't dropped by mistake
-        self._resonators = [r for r in self._resonators
-                            if not any(r is t for t in targets)]
-        for t in targets:
-            self._schedules.pop(self._res_key(t), None)   # drop any per-resonator power table
-        if self._sched_target not in ("__all__",) and \
-                self._sched_target not in {self._res_key(r) for r in self._resonators}:
-            self._sched_target = "__all__"
-        self._rebuild_chip_filter(); self._rebuild_sched_targets(); self._refresh_res_list()
-        self._log(f"Removed {len(targets)} resonator(s) from the list.")
-
     def _load_from_db(self):
         dlg = QualityRunPicker(self, single=False)
         if not (dlg.exec_() and dlg.result_value):
@@ -184,14 +176,6 @@ class TemperatureWindow(QMainWindow):
         root = QWidget(); outer = QVBoxLayout(root); self.setCentralWidget(root)
         split = QSplitter(Qt.Horizontal); outer.addWidget(split, 1)
         left = QWidget(); L = QVBoxLayout(left); L.setContentsMargins(10, 10, 10, 10)
-        # the control column is tall; keep it inside a vertical scroll area so it
-        # stays usable on shorter screens instead of being clipped by the window.
-        left_scroll = QScrollArea()
-        left_scroll.setWidgetResizable(True)
-        left_scroll.setWidget(left)
-        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        left_scroll.setFrameShape(QScrollArea.NoFrame)
-        left_scroll.setMinimumWidth(460)
         b = settings.block("temperature")
 
         # temperature vector
@@ -255,6 +239,9 @@ class TemperatureWindow(QMainWindow):
         w.addWidget(self.lbl_reject, 3, 0); w.addWidget(self.sp_reject, 3, 1)
         self.btn_gen = QPushButton("Generate table"); self.btn_gen.clicked.connect(self._generate_table)
         w.addWidget(self.btn_gen, 3, 2, 1, 2)
+        self.hpd_ctrl = HPDStartControls(bp)
+        self.hpd_ctrl.changed.connect(self._refresh_sweep_col)
+        w.addWidget(self.hpd_ctrl, 4, 0, 1, 4)
         L.addWidget(wg)
 
         # rule + table (avg 1-15, ifbw 1-1000)
@@ -278,10 +265,11 @@ class TemperatureWindow(QMainWindow):
         self.cmb_sched_target.currentIndexChanged.connect(self._on_sched_target_changed)
         strow.addWidget(self.cmb_sched_target, 1)
         L.addLayout(strow)
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Power (dBm)", "Averages", "IF bw (Hz)"])
+        self.table = QTableWidget(0, 4)
+        setup_sweep_column(self.table)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setMaximumHeight(150)
+        self.table.cellClicked.connect(self._on_table_click)
         L.addWidget(self.table)
 
         trow = QHBoxLayout()
@@ -292,7 +280,7 @@ class TemperatureWindow(QMainWindow):
             trow.addWidget(x)
         L.addLayout(trow)
 
-        L.addWidget(QLabel("Resonators to run  (check = include · select rows to remove)"))
+        L.addWidget(QLabel("Resonators to run"))
         crow = QHBoxLayout()
         crow.addWidget(QLabel("Chip"))
         self.cmb_chip = QComboBox(); self.cmb_chip.addItem("All chips")
@@ -300,7 +288,6 @@ class TemperatureWindow(QMainWindow):
         crow.addWidget(self.cmb_chip, 1)
         L.addLayout(crow)
         self.res_list = QListWidget(); self.res_list.setMaximumHeight(90)
-        self.res_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.res_list.itemChanged.connect(self._on_res_item_changed)
         L.addWidget(self.res_list)
         rrow = QHBoxLayout()
@@ -308,9 +295,7 @@ class TemperatureWindow(QMainWindow):
         self.btn_loaddb.clicked.connect(self._load_from_db)
         self.btn_spans = QPushButton("Edit freq/span…")
         self.btn_spans.clicked.connect(self._edit_spans)
-        self.btn_remove = QPushButton("Remove selected"); self.btn_remove.setObjectName("danger")
-        self.btn_remove.clicked.connect(self._remove_selected)
-        rrow.addWidget(self.btn_loaddb); rrow.addWidget(self.btn_spans); rrow.addWidget(self.btn_remove)
+        rrow.addWidget(self.btn_loaddb); rrow.addWidget(self.btn_spans)
         L.addLayout(rrow)
 
         brow = QHBoxLayout()
@@ -320,7 +305,7 @@ class TemperatureWindow(QMainWindow):
         self.btn_stop.setEnabled(False); self.btn_stop.clicked.connect(self._stop); brow.addWidget(self.btn_stop)
         L.addLayout(brow)
         self.log = QTextEdit(); self.log.setReadOnly(True); self.log.setMaximumHeight(110); L.addWidget(self.log)
-        split.addWidget(left_scroll)
+        split.addWidget(left)
 
         # right
         right = QWidget(); R = QVBoxLayout(right); R.setContentsMargins(10, 10, 10, 10)
@@ -345,6 +330,21 @@ class TemperatureWindow(QMainWindow):
 
     def _mode_changed(self):
         hpd = self._is_hpd(); self.lbl_reject.setVisible(hpd); self.sp_reject.setVisible(hpd)
+        self.hpd_ctrl.setVisible(hpd)
+        self._refresh_sweep_col()
+
+    def _refresh_sweep_col(self):
+        update_sweep_column(self.table, self._is_hpd(), self.hpd_ctrl.start_dbm())
+
+    def _on_table_click(self, row, col):
+        if col != SWEEP_COL or not self._is_hpd():
+            return
+        try:
+            pw = float(self.table.item(row, 0).text())
+        except Exception:
+            return
+        self.hpd_ctrl.set_start_dbm(pw)
+        self._log(f"HPD start set to {pw:g} dBm.")
 
     def _unit_scale(self):
         return 1e-3 if self.cmb_tunit.currentText() == "mK" else 1.0
@@ -401,6 +401,7 @@ class TemperatureWindow(QMainWindow):
             if self.table.item(i, 2) is None:
                 self.table.setItem(i, 2, QTableWidgetItem("1000"))
         self._apply_rule()
+        self._refresh_sweep_col()
 
     def _apply_rule(self):
         powers = [float(self.table.item(i, 0).text()) for i in range(self.table.rowCount())]
@@ -435,6 +436,7 @@ class TemperatureWindow(QMainWindow):
             self.table.setItem(i, 0, QTableWidgetItem(f"{pw:g}"))
             self.table.setItem(i, 1, QTableWidgetItem(str(int(av))))
             self.table.setItem(i, 2, QTableWidgetItem(str(int(bw))))
+        self._refresh_sweep_col()
 
     def _modify_table(self):
         from windows.dialogs import PowerScheduleDialog
@@ -462,19 +464,23 @@ class TemperatureWindow(QMainWindow):
         if not path.lower().endswith(".json"):
             path += ".json"
         try:
-            save_schedule(path, sched); self._log(f"Saved power config → {path}")
+            save_schedule(path, sched, hpd_start_dbm=self.hpd_ctrl.start_dbm())
+            self._log(f"Saved power config → {path}")
         except Exception as e:
             QMessageBox.warning(self, "Save failed", str(e))
 
     def _load_config(self):
         from PyQt5.QtWidgets import QFileDialog, QMessageBox
-        from core.schedule_io import load_schedule
+        from core.schedule_io import load_schedule, load_schedule_options
         path, _ = QFileDialog.getOpenFileName(self, "Load power config",
                                               "", "JSON config (*.json);;All files (*)")
         if not path:
             return
         try:
             sched = load_schedule(path)
+            opts = load_schedule_options(path)
+            if opts.get("hpd_start_dbm") is not None:
+                self.hpd_ctrl.set_start_dbm(opts["hpd_start_dbm"])
             self._fill_table(sched); self._log(f"Loaded power config ({len(sched)} points) ← {path}")
         except Exception as e:
             QMessageBox.warning(self, "Load failed", str(e))
@@ -519,9 +525,15 @@ class TemperatureWindow(QMainWindow):
         temps = self._temps_k()
         if not (resonators and schedule and temps):
             self._log("Need resonators, a power table, and temperatures."); return
+        customs = []
         for r in resonators:
             custom = self._schedules.get(self._res_key(r))
             r["_schedule"] = list(custom) if custom else None
+            if custom:
+                customs.append(custom)
+        if self._is_hpd() and not confirm_hpd_run(self, schedule, self.hpd_ctrl, customs):
+            self._log("Run cancelled at the HPD check.")
+            return
         settings.remember("temperature", {
             "t_start": self.sp_tstart.value(), "t_stop": self.sp_tstop.value(),
             "t_step": self.sp_tstep.value(), "t_unit": self.cmb_tunit.currentText(),
@@ -530,6 +542,7 @@ class TemperatureWindow(QMainWindow):
             "window": self.sp_win.value(), "poll_s": self.sp_poll.value(),
             "timeout_min": self.sp_timeout.value(),
         })
+        settings.remember("power", self.hpd_ctrl.remember())
         self.qi_plot.clear(); self._curves = {}
         params = {
             "tag": "TempPowerDep",
@@ -542,12 +555,15 @@ class TemperatureWindow(QMainWindow):
             "window": self.sp_win.value(),
             "time_between_readings": self.sp_poll.value(),
             "timeout_s": (self.sp_timeout.value() * 60 if self.sp_timeout.value() > 0 else None),
+            **(self.hpd_ctrl.params() if self._is_hpd() else {}),
         }
         instrument_manager.set_busy(True)
         self.btn_run.setEnabled(False); self.btn_stop.setEnabled(True)
+        mode_txt = (f"HPD, linear above {self.hpd_ctrl.start_dbm():g} dBm"
+                    if self._is_hpd() else "SPD")
         self._log(f"Starting temperature sweep: {len(temps)} temps × "
                   f"{len(self._schedule())} powers × {len(resonators)} resonators "
-                  f"({'HPD' if self._is_hpd() else 'SPD'}).")
+                  f"({mode_txt}).")
         self._worker = TemperatureWorker(instrument_manager, resonators, params)
         self._worker.progress.connect(self._log)
         self._worker.temperature_update.connect(self._on_temp)
@@ -556,6 +572,7 @@ class TemperatureWindow(QMainWindow):
             lambda d: self._log(f"✓ Temperature {d['t_label']} complete."))
         self._worker.finished.connect(self._on_finished)
         self._worker.error.connect(self._on_error)
+        self._connect_seed_dialog(self._worker)
         self._worker.start()
 
     def _stop(self):
@@ -595,16 +612,21 @@ class TemperatureWindow(QMainWindow):
             es = np.clip(es, 0.0, ys * 0.9)   # cap whisker so a huge fit error can't rescale the log axis
             self._curves[key]["curve"].setData(xs, ys)
             self._curves[key]["eb"].setData(x=xs, y=ys, top=es, bottom=es, beam=0.0)
-        self.lbl_temp.setText(f"{d.get('t_label','')} · Res {d['num']} @ {d['power_dbm']:g} dBm "
+        sweep = ""
+        if d.get("mode") == "hpd":
+            sweep = " [HPD]" if d.get("sweep") == "hpd" else " [linear]"
+        self.lbl_temp.setText(f"{d.get('t_label','')} · Res {d['num']} @ {d['power_dbm']:g} dBm{sweep} "
                               + (f"Qi={format_q(qi)}±{format_q(qe)}" if d.get("fit_ok") else "(fit failed)"))
 
     def _on_finished(self, results):
+        self._close_seed_dialog("finished")
         instrument_manager.set_busy(False)
         self.btn_run.setEnabled(True); self.btn_stop.setEnabled(False)
         self.lbl_temp.setText("Done.")
         self._log(f"✓ Temperature sweep complete ({len(results)} temperatures).")
 
     def _on_error(self, msg):
+        self._close_seed_dialog("error")
         instrument_manager.set_busy(False)
         self.btn_run.setEnabled(True); self.btn_stop.setEnabled(False)
         self._log("✗ " + msg.splitlines()[-1]); logger.error(msg)
@@ -617,9 +639,8 @@ class TemperatureWindow(QMainWindow):
                   self.cmb_tunit, self.chk_reverse, self.sp_pstart, self.sp_pstop,
                   self.sp_pstep, self.sp_points, self.btn_gen, self.btn_rule, self.table,
                   self.btn_modify, self.btn_savecfg, self.btn_loadcfg,
-                  self.btn_spans, self.btn_loaddb, self.btn_remove,
-                  self.cmb_sched_target,
-                  self.btn_temp_table, self.btn_temp_clear):
+                  self.btn_spans, self.btn_loaddb, self.cmb_sched_target,
+                  self.btn_temp_table, self.btn_temp_clear, self.hpd_ctrl):
             w.setEnabled(not busy)
 
     def _log(self, m):

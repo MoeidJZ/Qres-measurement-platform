@@ -8,23 +8,29 @@ steps.
 
 Schedule format in memory: list of (power_dBm, averages, if_bw_Hz) tuples.
 On disk:
-    {"kind": "qres_power_schedule", "version": 1,
-     "schedule": [[-40, 1, 1000], [-60, 15, 10], ...]}
+    {"kind": "qres_power_schedule", "version": 2,
+     "schedule": [[-40, 1, 1000], [-60, 15, 10], ...],
+     "hpd_start_dbm": -30}           # optional: HPD from this power down
+
+Version-1 files (no "hpd_start_dbm") still load; the HPD start is then left
+as it is in the window.
 """
 
 from __future__ import annotations
 
 import json
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 Schedule = List[Tuple[float, int, int]]
 
 
-def save_schedule(path: str, schedule: Schedule) -> None:
+def save_schedule(path: str, schedule: Schedule, hpd_start_dbm: Optional[float] = None) -> None:
     rows = [[float(p), int(a), int(b)] for (p, a, b) in schedule]
+    data = {"kind": "qres_power_schedule", "version": 2, "schedule": rows}
+    if hpd_start_dbm is not None:
+        data["hpd_start_dbm"] = float(hpd_start_dbm)
     with open(path, "w", encoding="utf-8") as fh:
-        json.dump({"kind": "qres_power_schedule", "version": 1, "schedule": rows},
-                  fh, indent=2)
+        json.dump(data, fh, indent=2)
 
 
 def load_schedule(path: str) -> Schedule:
@@ -43,6 +49,24 @@ def load_schedule(path: str) -> Schedule:
             continue
     if not out:
         raise ValueError("No valid schedule rows found in file.")
+    return out
+
+
+def load_schedule_options(path: str) -> dict:
+    """Extra settings stored with a schedule (currently only ``hpd_start_dbm``)."""
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out = {}
+    try:
+        if data.get("hpd_start_dbm") is not None:
+            out["hpd_start_dbm"] = float(data["hpd_start_dbm"])
+    except Exception:
+        pass
     return out
 
 

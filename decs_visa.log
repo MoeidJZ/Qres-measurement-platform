@@ -1,0 +1,75 @@
+2026-09-16 22:43:22,011 - INFO - OS is: Windows-10-10.0.26200-SP0
+2026-09-16 22:43:22,121 - INFO - DECS<->VISA start up
+2026-09-16 22:43:22,127 - INFO - Server listening: localhost:33576
+2026-09-16 22:43:22,163 - INFO - WAMP connection made
+2026-09-16 22:43:22,176 - INFO - Starting WAMP-CRA authentication on realm 'ucss' as user 'GUI_Controller_1'
+2026-09-16 22:43:22,188 - INFO - Established session: 765632
+2026-09-16 22:43:22,189 - INFO - Attempt to establish a controlling session
+2026-09-16 22:43:22,278 - INFO - Ready to process WAMP RPCs
+2026-09-16 22:43:22,857 - INFO - Server connection: ('127.0.0.1', 50335)
+2026-09-16 22:45:12,873 - INFO - WAMP call ApplicationError: wamp.error.invalid_uri: 
+2026-09-16 22:45:12,873 - INFO - WAMP ApplicationError on get: wamp.error.invalid_uri: 
+2026-09-20 19:30:37,491 - INFO - Leaving WAMP session: wamp.close.transport_lost
+2026-09-20 19:30:37,512 - INFO - Stopping WAMP event_loop
+2026-09-21 21:45:08,202 - INFO - OS is: Windows-10-10.0.26200-SP0
+2026-09-21 21:45:08,309 - INFO - DECS<->VISA start up
+2026-09-21 21:45:08,316 - INFO - Server listening: localhost:33576
+2026-09-21 21:45:08,360 - INFO - WAMP connection made
+2026-09-21 21:45:08,368 - INFO - Starting WAMP-CRA authentication on realm 'ucss' as user 'GUI_Controller_1'
+2026-09-21 21:45:08,372 - INFO - Established session: 13303
+2026-09-21 21:45:08,372 - INFO - Attempt to establish a controlling session
+2026-09-21 21:45:08,407 - INFO - Ready to process WAMP RPCs
+2026-09-21 21:45:09,102 - INFO - Server connection: ('127.0.0.1', 26581)
+2026-09-21 21:48:24,873 - INFO - WAMP call ApplicationError: wamp.error.invalid_uri: 
+2026-09-21 21:48:24,874 - INFO - WAMP ApplicationError on get: wamp.error.invalid_uri: 
+2026-09-22 12:22:02,006 - INFO - Client disconnected
+2026-09-23 00:26:54,213 - INFO - OS is: Windows-10-10.0.26200-SP0
+2026-09-23 00:26:54,225 - INFO - DECS<->VISA start up
+2026-09-23 00:26:54,229 - INFO - Server listening: localhost:33576
+2026-09-23 00:26:54,236 - INFO - WAMP connection made
+2026-09-23 00:26:54,241 - INFO - Starting WAMP-CRA authentication on realm 'ucss' as user 'GUI_Controller_1'
+2026-09-23 00:26:54,243 - INFO - Established session: 29328
+2026-09-23 00:26:54,244 - INFO - Attempt to establish a controlling session
+2026-09-23 00:26:54,250 - INFO - DECS system is not in remote control mode
+2026-09-23 00:26:54,250 - INFO - WAMP closing session
+2026-09-23 00:26:54,251 - INFO - WAMP call ApplicationError: wamp.error.not_authorized: 
+2026-09-23 00:26:54,253 - INFO - Leaving WAMP session: wamp.error.goodbye_and_out
+2026-09-23 00:26:54,754 - INFO - Stopping WAMP event_loop
+2026-09-23 00:26:55,112 - INFO - Server connection: ('127.0.0.1', 9777)
+2026-09-23 00:26:55,928 - INFO - Socket server shutting down
+2026-09-23 00:26:55,928 - INFO - DECS<->VISA stopped
+2026-09-23 16:18:03,032 - INFO - OS is: Windows-10-10.0.26200-SP0
+2026-09-23 16:18:03,043 - INFO - DECS<->VISA start up
+2026-09-23 16:18:03,047 - INFO - Server listening: localhost:33576
+2026-09-23 16:18:03,053 - INFO - WAMP connection made
+2026-09-23 16:18:03,058 - INFO - Starting WAMP-CRA authentication on realm 'ucss' as user 'GUI_Controller_1'
+2026-09-23 16:18:03,059 - INFO - Established session: 38840
+2026-09-23 16:18:03,060 - INFO - Attempt to establish a controlling session
+2026-09-23 16:18:03,080 - INFO - Ready to process WAMP RPCs
+2026-09-23 16:18:03,932 - INFO - Server connection: ('127.0.0.1', 8342)
+2026-09-23 16:18:35,966 - INFO - WAMP call ApplicationError: wamp.error.invalid_uri: 
+2026-09-23 16:18:35,967 - INFO - WAMP ApplicationError on get: wamp.error.invalid_uri: 
+2026-09-23 18:05:35,240 - INFO - Client disconnected
+2026-09-23 18:42:49,085 - INFO - OS is: Windows-10-10.0.26200-SP0
+2026-09-23 18:42:49,098 - INFO - DECS<->VISA start up
+2026-09-23 18:42:49,102 - INFO - Server listening: localhost:33576
+2026-09-23 18:42:49,109 - INFO - WAMP connection made
+2026-09-23 18:42:49,116 - INFO - Starting WAMP-CRA authentication on realm 'ucss' as user 'GUI_Controller_1'
+2026-09-23 18:42:49,119 - INFO - Established session: 40288
+2026-09-23 18:42:49,120 - INFO - Attempt to establish a controlling session
+2026-09-23 18:42:49,137 - INFO - Ready to process WAMP RPCs
+2026-09-23 18:42:49,981 - INFO - Server connection: ('127.0.0.1', 37905)
+2026-09-23 18:43:25,354 - INFO - WAMP call ApplicationError: wamp.error.invalid_uri: 
+2026-09-23 18:43:25,354 - INFO - WAMP ApplicationError on get: wamp.error.invalid_uri: 
+2026-09-23 19:45:04,695 - INFO - Client disconnected
+2026-09-29 16:00:23,227 - INFO - OS is: Windows-10-10.0.26200-SP0
+2026-09-29 16:00:23,239 - INFO - DECS<->VISA start up
+2026-09-29 16:00:23,244 - INFO - Server listening: localhost:33576
+2026-09-29 16:00:23,250 - INFO - WAMP connection made
+2026-09-29 16:00:23,254 - INFO - Starting WAMP-CRA authentication on realm 'ucss' as user 'GUI_Controller_1'
+2026-09-29 16:00:23,256 - INFO - Established session: 125071
+2026-09-29 16:00:23,256 - INFO - Attempt to establish a controlling session
+2026-09-29 16:00:23,272 - INFO - Ready to process WAMP RPCs
+2026-09-29 16:00:24,139 - INFO - Server connection: ('127.0.0.1', 34625)
+2026-09-29 16:01:20,478 - INFO - WAMP call ApplicationError: wamp.error.invalid_uri: 
+2026-09-29 16:01:20,478 - INFO - WAMP ApplicationError on get: wamp.error.invalid_uri: 

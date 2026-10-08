@@ -16,6 +16,14 @@ Responsibilities
   a measurement is running (the "always accessible, just greyed when busy"
   requirement).
 * Keep all heavy imports lazy so this module imports without qcodes present.
+
+PNA driver
+----------
+The PNA is driven by the project's own copy of the QCoDeS N52xx driver,
+``core/drivers/keysight_pna.py``, which adds segment-sweep support (needed by
+HPD) and a 64-bit stimulus read-back. The model class is chosen from *IDN?:
+PNA-X models (N5241/2/4/5/7) use KeysightN5245A, everything else (e.g. the
+PNA-L N5235A) uses KeysightN5235A.
 """
 
 from __future__ import annotations
@@ -27,6 +35,8 @@ from core.settings import settings
 from core.fridge import FridgeBackend, make_fridge
 
 logger = logging.getLogger(__name__)
+
+_PNA_X_MODELS = ("N5241", "N5242", "N5244", "N5245", "N5247", "N5249")
 
 
 class InstrumentManager:
@@ -102,7 +112,7 @@ class InstrumentManager:
 
     def connect_pna(self, address: Optional[str] = None):
         import qcodes as qc
-        from qcodes.instrument_drivers.Keysight import KeysightN5245A
+        from core.drivers.keysight_pna import KeysightN5235A, KeysightN5245A
 
         address = address or settings.get("network.pna_address")
 
@@ -118,7 +128,15 @@ class InstrumentManager:
             except Exception:
                 pass
 
-        self.pna = KeysightN5245A("pna", address)
+        pna = KeysightN5235A("pna", address)
+        try:
+            model = str(pna.IDN().get("model") or "")
+        except Exception:
+            model = ""
+        if model.upper().startswith(_PNA_X_MODELS):
+            pna.close()
+            pna = KeysightN5245A("pna", address)
+        self.pna = pna
         self._patch_pna_quirks(self.pna)
         return self.pna
 
@@ -139,7 +157,7 @@ class InstrumentManager:
             False: False, True: True,
         }
         for name in ("averages_enabled", "output", "rf_output",
-                     "averaging_enabled", "sweep_mode_hold"):
+                     "averaging_enabled", "sweep_mode_hold", "segment_arbitrary"):
             p = getattr(pna, name, None)
             if p is None:
                 continue
@@ -164,10 +182,6 @@ class InstrumentManager:
         When ``make_permanent`` is True the value is written to the settings
         file so it becomes the default next launch; otherwise it is only used
         for the current session (we still set it, just without persisting).
-
-        The UI flow is: try to connect -> fail -> let the user edit the address
-        -> retry -> on success ask "make this permanent?" -> call this with the
-        user's answer.
         """
         key_map = {
             "pna": "network.pna_address",
@@ -177,8 +191,6 @@ class InstrumentManager:
         }
         if which not in key_map:
             raise ValueError(f"Unknown address target {which!r}")
-        # autosave=make_permanent: when not permanent we keep it in the live
-        # settings object for this session but do not flush to disk.
         settings.set(key_map[which], new_address, autosave=make_permanent)
 
     # ------------------------------------------------------------------

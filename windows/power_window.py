@@ -4,13 +4,18 @@ windows/power_window.py
 Step 4: power-dependent measurement.
 
 * Power vector from start/stop/step.
-* Averaging schedule as an editable table (power · averages · IF bw). Fill it
-  two ways: type values directly, or use the rule fields (averages & IF bw at
-  the lowest and highest power) which geometrically interpolate across the
-  vector and pre-fill the table — then edit any cell.
-* Sweep mode toggle: SPD (linear, low→high; default) or HPD (segment sweep,
-  high→low; table regenerated per power from the running fit, seeded by the
-  Phase-6 quality fit). HPD also exposes the Qi-jump reject factor.
+* Averaging schedule as an editable table (power · averages · IF bw · sweep).
+  Fill it two ways: type values directly, or use the rule fields (averages &
+  IF bw at the lowest and highest power) which geometrically interpolate across
+  the vector and pre-fill the table — then edit any cell.
+* Sweep mode toggle: SPD (linear, low→high; default) or HPD (high→low).
+  In HPD mode, powers above "HPD from ≤ X dBm" are measured with linear sweeps
+  (so Kerr-distorted high-power fits never seed the HPD); from X down the
+  homophasal segment sweep is used, seeded from the lowest linear power's fit.
+  The "Sweep" column shows Linear/HPD per row; clicking it sets X. Optionally,
+  right after Run every resonator is measured once at its seed power and all
+  fits are shown in one window, where you tick which resonators may use HPD;
+  the sweep then runs unattended. No answer within the timeout → all linear.
 * Live Qi-vs-power plot updates after every power point.
 * Continue hands the measured resonators to the temperature step (Phase 7b).
 """
@@ -26,7 +31,6 @@ from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox,
     QLabel, QDoubleSpinBox, QSpinBox, QComboBox, QPushButton, QListWidget,
     QListWidgetItem, QTableWidget, QTableWidgetItem, QTextEdit, QSplitter,
-    QAbstractItemView,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 
@@ -35,13 +39,17 @@ from core.settings import settings
 from core.measure_workers import PowerWorker
 from core.fitting import format_q, fit_notch, s21_from_mag_phase
 from windows.dialogs import QualityRunPicker
+from windows.hpd_controls import (
+    HPDStartControls, SeedDialogHost, SWEEP_COL, confirm_hpd_run,
+    setup_sweep_column, update_sweep_column,
+)
 from core import analysis_io as aio
 
 logger = logging.getLogger(__name__)
 pg.setConfigOptions(antialias=True, background=None, foreground="#cdd6f4")
 
 
-class PowerWindow(QMainWindow):
+class PowerWindow(SeedDialogHost, QMainWindow):
     resonatorsForTemperature = pyqtSignal(list)
 
     def __init__(self, parent=None):
@@ -53,6 +61,7 @@ class PowerWindow(QMainWindow):
         self._schedules = {"__all__": None}   # target key -> schedule (per-resonator override)
         self._sched_target = "__all__"
         self._worker = None
+        self._seed_dlg = None
         self._curves: Dict[int, Dict] = {}   # num -> {'powers':[], 'qis':[], 'curve':PlotDataItem}
         self._build_ui()
         instrument_manager.on_busy_changed(self._on_busy)
@@ -138,26 +147,6 @@ class PowerWindow(QMainWindow):
         if 0 <= row < len(self._res_visible):
             self._res_visible[row]["_checked"] = (item.checkState() == Qt.Checked)
 
-    def _remove_selected(self):
-        from PyQt5.QtWidgets import QMessageBox
-        rows = [self.res_list.row(it) for it in self.res_list.selectedItems()]
-        targets = [self._res_visible[r] for r in rows if 0 <= r < len(self._res_visible)]
-        if not targets:
-            QMessageBox.information(self, "Nothing selected",
-                                   "Select one or more resonators in the list to remove them "
-                                   "(click a row; Ctrl/Shift-click for several).")
-            return
-        # remove by identity so equal-looking dicts aren't dropped by mistake
-        self._resonators = [r for r in self._resonators
-                            if not any(r is t for t in targets)]
-        for t in targets:
-            self._schedules.pop(self._res_key(t), None)   # drop any per-resonator power table
-        if self._sched_target not in ("__all__",) and \
-                self._sched_target not in {self._res_key(r) for r in self._resonators}:
-            self._sched_target = "__all__"
-        self._rebuild_chip_filter(); self._rebuild_sched_targets(); self._refresh_res_list()
-        self._log(f"Removed {len(targets)} resonator(s) from the list.")
-
     def _load_from_db(self):
         dlg = QualityRunPicker(self, single=False)
         if not (dlg.exec_() and dlg.result_value):
@@ -218,6 +207,9 @@ class PowerWindow(QMainWindow):
         g.addWidget(self.lbl_reject, 3, 0); g.addWidget(self.sp_reject, 3, 1)
         self.btn_gen = QPushButton("Generate table"); self.btn_gen.clicked.connect(self._generate_table)
         g.addWidget(self.btn_gen, 3, 2, 1, 2)
+        self.hpd_ctrl = HPDStartControls(b)
+        self.hpd_ctrl.changed.connect(self._refresh_sweep_col)
+        g.addWidget(self.hpd_ctrl, 4, 0, 1, 4)
         L.addWidget(grp)
 
         # rule
@@ -242,9 +234,10 @@ class PowerWindow(QMainWindow):
         self.cmb_sched_target.currentIndexChanged.connect(self._on_sched_target_changed)
         strow.addWidget(self.cmb_sched_target, 1)
         L.addLayout(strow)
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Power (dBm)", "Averages", "IF bw (Hz)"])
+        self.table = QTableWidget(0, 4)
+        setup_sweep_column(self.table)
         self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.cellClicked.connect(self._on_table_click)
         L.addWidget(self.table, 1)
 
         trow = QHBoxLayout()
@@ -262,9 +255,8 @@ class PowerWindow(QMainWindow):
         self.cmb_chip.currentIndexChanged.connect(lambda *_: self._refresh_res_list())
         crow.addWidget(self.cmb_chip, 1)
         L.addLayout(crow)
-        L.addWidget(QLabel("Resonators to run  (check = include · select rows to remove)"))
+        L.addWidget(QLabel("Resonators to run"))
         self.res_list = QListWidget(); self.res_list.setMaximumHeight(120)
-        self.res_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.res_list.itemChanged.connect(self._on_res_item_changed)
         L.addWidget(self.res_list)
         rrow = QHBoxLayout()
@@ -272,9 +264,7 @@ class PowerWindow(QMainWindow):
         self.btn_loaddb.clicked.connect(self._load_from_db)
         self.btn_spans = QPushButton("Edit freq/span…")
         self.btn_spans.clicked.connect(self._edit_spans)
-        self.btn_remove = QPushButton("Remove selected"); self.btn_remove.setObjectName("danger")
-        self.btn_remove.clicked.connect(self._remove_selected)
-        rrow.addWidget(self.btn_loaddb); rrow.addWidget(self.btn_spans); rrow.addWidget(self.btn_remove)
+        rrow.addWidget(self.btn_loaddb); rrow.addWidget(self.btn_spans)
         L.addLayout(rrow)
 
         brow = QHBoxLayout()
@@ -314,6 +304,21 @@ class PowerWindow(QMainWindow):
     def _mode_changed(self):
         hpd = self._is_hpd()
         self.lbl_reject.setVisible(hpd); self.sp_reject.setVisible(hpd)
+        self.hpd_ctrl.setVisible(hpd)
+        self._refresh_sweep_col()
+
+    def _refresh_sweep_col(self):
+        update_sweep_column(self.table, self._is_hpd(), self.hpd_ctrl.start_dbm())
+
+    def _on_table_click(self, row, col):
+        if col != SWEEP_COL or not self._is_hpd():
+            return
+        try:
+            pw = float(self.table.item(row, 0).text())
+        except Exception:
+            return
+        self.hpd_ctrl.set_start_dbm(pw)
+        self._log(f"HPD start set to {pw:g} dBm.")
 
     def _power_vector(self):
         a, b, s = self.sp_pstart.value(), self.sp_pstop.value(), self.sp_pstep.value()
@@ -331,6 +336,7 @@ class PowerWindow(QMainWindow):
             if self.table.item(i, 2) is None:
                 self.table.setItem(i, 2, QTableWidgetItem("1000"))
         self._apply_rule()
+        self._refresh_sweep_col()
 
     def _apply_rule(self):
         powers = [float(self.table.item(i, 0).text()) for i in range(self.table.rowCount())]
@@ -367,6 +373,7 @@ class PowerWindow(QMainWindow):
             self.table.setItem(i, 0, QTableWidgetItem(f"{pw:g}"))
             self.table.setItem(i, 1, QTableWidgetItem(str(int(av))))
             self.table.setItem(i, 2, QTableWidgetItem(str(int(bw))))
+        self._refresh_sweep_col()
 
     def _modify_table(self):
         from windows.dialogs import PowerScheduleDialog
@@ -394,19 +401,23 @@ class PowerWindow(QMainWindow):
         if not path.lower().endswith(".json"):
             path += ".json"
         try:
-            save_schedule(path, sched); self._log(f"Saved power config → {path}")
+            save_schedule(path, sched, hpd_start_dbm=self.hpd_ctrl.start_dbm())
+            self._log(f"Saved power config → {path}")
         except Exception as e:
             QMessageBox.warning(self, "Save failed", str(e))
 
     def _load_config(self):
         from PyQt5.QtWidgets import QFileDialog, QMessageBox
-        from core.schedule_io import load_schedule
+        from core.schedule_io import load_schedule, load_schedule_options
         path, _ = QFileDialog.getOpenFileName(self, "Load power config",
                                               "", "JSON config (*.json);;All files (*)")
         if not path:
             return
         try:
             sched = load_schedule(path)
+            opts = load_schedule_options(path)
+            if opts.get("hpd_start_dbm") is not None:
+                self.hpd_ctrl.set_start_dbm(opts["hpd_start_dbm"])
             self._fill_table(sched); self._log(f"Loaded power config ({len(sched)} points) ← {path}")
         except Exception as e:
             QMessageBox.warning(self, "Load failed", str(e))
@@ -450,10 +461,16 @@ class PowerWindow(QMainWindow):
         default = self._schedules.get("__all__") or self._schedule()
         if not resonators or not default:
             self._log("Need at least one resonator and one power point."); return
+        customs = []
         for r in resonators:
             custom = self._schedules.get(self._res_key(r))
             r["_schedule"] = list(custom) if custom else None
+            if custom:
+                customs.append(custom)
         schedule = default
+        if self._is_hpd() and not confirm_hpd_run(self, schedule, self.hpd_ctrl, customs):
+            self._log("Run cancelled at the HPD check.")
+            return
         settings.remember("power", {
             "mode_hpd": 1 if self._is_hpd() else 0,
             "p_start": self.sp_pstart.value(), "p_stop": self.sp_pstop.value(),
@@ -461,6 +478,7 @@ class PowerWindow(QMainWindow):
             "qi_reject_factor": self.sp_reject.value(),
             "avg_low": self.sp_avg_lo.value(), "avg_high": self.sp_avg_hi.value(),
             "ifbw_low": self.sp_bw_lo.value(), "ifbw_high": self.sp_bw_hi.value(),
+            **self.hpd_ctrl.remember(),
         })
         # reset plot
         self.qi_plot.clear(); self._curves = {}
@@ -468,17 +486,20 @@ class PowerWindow(QMainWindow):
             "mode": "hpd" if self._is_hpd() else "spd",
             "schedule": schedule, "points": self.sp_points.value(),
             "qi_reject_factor": self.sp_reject.value(), "trace": "S21",
+            **(self.hpd_ctrl.params() if self._is_hpd() else {}),
         }
         instrument_manager.set_busy(True)
         self.btn_run.setEnabled(False); self.btn_stop.setEnabled(True)
-        self._log(f"Starting {'HPD' if self._is_hpd() else 'SPD'} power sweep "
-                  f"on {len(resonators)} resonator(s)…")
+        mode_txt = (f"HPD (linear above {self.hpd_ctrl.start_dbm():g} dBm)"
+                    if self._is_hpd() else "SPD")
+        self._log(f"Starting {mode_txt} power sweep on {len(resonators)} resonator(s)…")
         self._worker = PowerWorker(instrument_manager, resonators, params)
         self._worker.progress.connect(self._log)
         self._worker.point_measured.connect(self._on_point)
         self._worker.res_finished.connect(lambda d: self._log(f"✓ Res {d['num']} done."))
         self._worker.finished.connect(self._on_finished)
         self._worker.error.connect(self._on_error)
+        self._connect_seed_dialog(self._worker)
         self._worker.start()
 
     def _stop(self):
@@ -516,18 +537,23 @@ class PowerWindow(QMainWindow):
             es = np.clip(es, 0.0, ys * 0.9)
             self._curves[num]["curve"].setData(xs, ys)
             self._curves[num]["eb"].setData(x=xs, y=ys, top=es, bottom=es, beam=0.0)
-        tag = " (reused seed)" if d.get("reused") else ""
+        tag = ""
+        if d.get("mode") == "hpd":
+            tag += " [HPD]" if d.get("sweep") == "hpd" else " [linear]"
+        tag += " (reused seed)" if d.get("reused") and d.get("sweep") == "hpd" else ""
         tag += " (SPD fallback)" if d.get("fallback_spd") else ""
         qitxt = (f"Qi={format_q(qi)}±{format_q(qe)}{tag}"
                  if d.get("fit_ok") else f"fit failed{tag}")
         self._log(f"  Res {num} @ {pw:g} dBm: " + qitxt)
 
     def _on_finished(self, results):
+        self._close_seed_dialog("finished")
         instrument_manager.set_busy(False)
         self.btn_run.setEnabled(True); self.btn_stop.setEnabled(False)
         self._log(f"✓ Power sweep complete ({len(results)} resonator(s)).")
 
     def _on_error(self, tb):
+        self._close_seed_dialog("error")
         instrument_manager.set_busy(False)
         self.btn_run.setEnabled(True); self.btn_stop.setEnabled(False)
         self._log("✗ Error: " + tb.splitlines()[-1]); logger.error(tb)
@@ -544,8 +570,7 @@ class PowerWindow(QMainWindow):
         for w in (self.cmb_mode, self.sp_pstart, self.sp_pstop, self.sp_pstep,
                   self.sp_points, self.btn_gen, self.btn_rule, self.table,
                   self.btn_modify, self.btn_savecfg, self.btn_loadcfg,
-                  self.btn_spans, self.btn_loaddb, self.btn_remove,
-                  self.cmb_sched_target):
+                  self.btn_spans, self.btn_loaddb, self.cmb_sched_target, self.hpd_ctrl):
             w.setEnabled(not busy)
 
     def _log(self, m):

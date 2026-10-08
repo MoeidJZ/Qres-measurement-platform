@@ -2,7 +2,7 @@
 
 **A guided desktop application for measuring and analysing superconducting microwave resonators in dilution / variable-temperature cryostats.**
 
-QRes Platform combines instrument control, a step-by-step measurement workflow, and a full circle-fit analysis suite into a single PyQt5 application. It drives a Keysight PNA-X vector network analyser together with an Oxford cryostat, walks you from a broad wideband scan all the way to temperature- and power-dependent quality-factor measurements, and lets you fit and extract physics (internal quality factor, coupling, photon number) from the data it collects — or from any previously saved run.
+QRes Platform combines instrument control, a step-by-step measurement workflow, and a full circle-fit analysis suite into a single PyQt5 application. It drives a Keysight PNA / PNA-L / PNA-X vector network analyser together with an Oxford cryostat, walks you from a broad wideband scan all the way to temperature- and power-dependent quality-factor measurements, and lets you fit and extract physics (internal quality factor, coupling, photon number) from the data it collects — or from any previously saved run.
 
 ---
 
@@ -28,7 +28,8 @@ QRes Platform combines instrument control, a step-by-step measurement workflow, 
 ## Highlights
 
 - **End-to-end guided workflow** — wideband scan → resonance picking → span selection → quality assessment → power-dependent → temperature + power-dependent, each as its own focused window with sensible gating between steps.
-- **Real instrument control** — Keysight PNA-X (N5245A / N52xx family) over QCoDeS, plus Oxford **Proteox** and **Teslatron** cryostats, or a **Manual** fridge mode for offline / dry runs.
+- **Real instrument control** — Keysight PNA-L (N5235A) / PNA-X (N5245A) over QCoDeS, plus Oxford **Proteox** and **Teslatron** cryostats, or a **Manual** fridge mode for offline / dry runs.
+- **Homophasal point distribution (HPD)** — power sweeps can redistribute the frequency points uniformly around the resonance circle with a real PNA segment sweep, over the full span you chose (Baity *et al.* 2024).
 - **Interruptible sweeps** — every long sweep can be stopped cleanly mid-acquisition without leaving the instrument in a bad state.
 - **Authoritative circle-fit analysis** — uses the full Probst `resonator_tools` notch-port fitter for diameter-corrected internal/coupling quality factors with error estimates and χ².
 - **Photon-number calibration** — converts VNA power to on-chip power via a configurable attenuation and computes the intra-resonator photon number.
@@ -66,7 +67,9 @@ Each backend exposes a common interface: read temperature, set a target temperat
 
 ### Vector network analyser
 
-- **Keysight PNA-X**, e.g. **N5245A**, through the QCoDeS `KeysightPNABase` / `N52xx` driver.
+- **Keysight PNA-L N5235A** (and PNA-X N5245A), through the project's own copy of the QCoDeS N52xx driver, `core/drivers/keysight_pna.py`. The model class is picked from `*IDN?`.
+- The driver adds **segment sweep** support to the stock QCoDeS driver (which has no segment API and raises in segment mode): program / read back a segment table, and read the **actual stimulus frequencies in 64-bit** (`SENS:X?`) — the default 32-bit transfer would round frequencies to ~512 Hz at 5 GHz.
+- **Option 216** (source attenuators) is recognised on the N5235A, unlocking powers down to −90 dBm.
 - The platform configures the instrument for efficient **binary** trace transfer (`FORM REAL,32`) and reads magnitude/phase as binary blocks.
 - **Driver-native, abortable triggering**: sweeps are triggered through the driver's own sweep-mode parameters and polled for completion so a *Stop* request is honoured within a fraction of a second — without desynchronising the VISA session.
 - **Firmware-quirk handling**: tolerant value mapping for parameters such as `averages_enabled` that some firmware reports as `+0` / `+1`.
@@ -115,8 +118,12 @@ Measure and circle-fit each resonator individually, with a clear per-resonator s
 
 Sweep each confirmed resonator over a range of powers and watch the internal quality factor evolve. Two acquisition strategies are available:
 
-- **SPD (Standard Power Dependence)** — powers low → high, all stored in a **single run** sharing one frequency axis.
-- **HPD (High-resolution Power Dependence)** — powers high → low using an **adaptive narrow linear sweep**. At each power the window auto-shrinks to a few linewidths around the resonance (clamped between 5 % and 100 % of the original span), concentrating your points exactly where they matter as the resonance sharpens at low power (following the point-redistribution idea of ref. [3]). The resonance is re-centred from each fit; a Qi jump beyond a configurable factor reuses the previous seed. All powers are stored in a **single run**.
+- **SPD (standard point distribution)** — powers low → high, linear sweep, all stored in a **single run** sharing one frequency axis.
+- **HPD (homophasal point distribution)** — powers high → low. Powers **above** the *HPD from ≤ X dBm* setting are measured with ordinary linear sweeps, so Kerr-distorted high-power fits never steer the HPD. From X down, a **PNA segment sweep over the full span you chose** places the points equidistant in resonance phase, θ(f) = θ₀ + 2·arctan(2Ql(1 − f/fr)), so they spread evenly around the resonance circle instead of piling up at the off-resonant point (ref. [3], Sec. IV). The first HPD power is seeded from the fit at the lowest linear power; each later HPD power is seeded from the previous one's fit. The point set runs as a few dozen contiguous linear segments, cut wherever the local spacing changes by more than 20 %, and near fr the spacing is capped at the PNA's 1 Hz resolution. The actual frequencies are read back and saved with every power.
+  - The power table's **Sweep** column shows Linear / HPD per row; click a cell there to start HPD at that power. The HPD start is saved in power configs.
+  - Before the run, a warning lists which powers are linear and which fit seeds the HPD, so you can check that fit first.
+  - With **Check seed fits before the sweep** on, each selected resonator is measured once right after you click Run (for temperature runs, before the first temperature is set), with a linear sweep at its seed power. All fits are shown in one window (circle and |S21| per resonator), where you tick which resonators may use HPD. A fit that fails, or that shows no clear resonance (circle diameter Ql/|Qc| < 0.01), can't be ticked. After **Start power sweep**, the run continues unattended; temperature runs keep the same choice at every temperature, re-seeding from each temperature's own fit. If nobody answers within the timeout (default 10 min), every resonator stays linear.
+  - A Qi jump beyond the *Qi reject* factor keeps the previous seed; if the PNA refuses a segment table, that power is measured linearly and flagged. All powers are stored in a **single run**.
 
 Both modes provide:
 
@@ -143,7 +150,7 @@ Open the analysis window on **any** `.db` file — data taken with this platform
 
 - Pick a database and a run; choose an export folder and base name.
 - **Real-time circle fit**: drag the fit region on the magnitude/phase plots and the complex-plane fit updates live (throttled for smoothness).
-- **Per-power navigation** for multi-power runs, including HPD runs whose frequency window differs per power.
+- **Per-power navigation** for multi-power runs, including HPD runs whose frequency points differ per power.
 - **Attenuation / photon calibration**: enter the line attenuation (negative dB, *added* to the VNA power to give on-chip power) and read the intra-resonator photon number for the current fit.
 - **Keyboard shortcuts** for fast review: next/previous power, next/previous run, and save.
 - **Exports**:
@@ -194,7 +201,7 @@ following the standard expression for a notch-coupled resonator (see ref. [3]).
   ```
 
   Names include the resonator index, the run type (Wide / Quality / SPD / HPD), the temperature label, and the start/stop frequency band.
-- **Power-dependent runs are consolidated into a single run id** per resonator (per temperature), with each power's trace stored inside that one run — including HPD runs where each power uses its own frequency window.
+- **Power-dependent runs are consolidated into a single run id** per resonator (per temperature), with each power's trace stored inside that one run — HPD runs store each power's own (non-uniform) frequency points.
 - **CSV exports** contain frequency, magnitude, phase, and the simulated fit; metrics exports include quality factors with errors, `phi_rad`, and photon number.
 
 ---
@@ -223,9 +230,14 @@ qres_platform/
 │   ├── connect_workers.py      # Threaded connection workers
 │   ├── control_workers.py      # Threaded instrument-control workers
 │   ├── measure_workers.py      # Wideband / Quality / Power / Temperature workers
-│   ├── pna_segment.py          # Sweep helpers
+│   ├── pna_segment.py          # HPD point distribution → segment table
 │   ├── fitting.py              # Circle-fit wrapper, photon number, formatting
-│   └── analysis_io.py          # Run loading, trace access, CSV export
+│   ├── analysis_io.py          # Run loading, trace access, CSV export
+│   └── drivers/
+│       └── keysight_pna.py     # N52xx QCoDeS driver + segment sweep (N5235A, N5245A)
+│
+├── tools/
+│   └── pna_segment_hw_test.py  # Hardware check of segment sweep / HPD on the PNA
 │
 └── windows/
     ├── welcome_window.py
@@ -239,6 +251,7 @@ qres_platform/
     ├── power_window.py
     ├── temperature_window.py
     ├── analysis_window.py
+    ├── hpd_controls.py         # HPD start column, pre-run warning, seed dialog
     ├── tutorial_window.py
     ├── dialogs.py
     └── widgets/
@@ -283,7 +296,7 @@ qres_platform/
    python check_env.py
    ```
 
-> **Hardware note:** controlling a real PNA-X requires a working VISA backend (e.g. Keysight IO Libraries / NI-VISA) on the measurement PC. For the Proteox backend, the local `decs_visa` path must be configured on that PC. You can explore the entire UI and the analysis suite without any instruments by selecting **Manual** fridge mode and loading existing data.
+> **Hardware note:** controlling a real PNA requires a working VISA backend (e.g. Keysight IO Libraries / NI-VISA) on the measurement PC. For the Proteox backend, the local `decs_visa` path must be configured on that PC. You can explore the entire UI and the analysis suite without any instruments by selecting **Manual** fridge mode and loading existing data.
 
 ---
 
@@ -294,6 +307,12 @@ python main.py
 ```
 
 The welcome screen lets you pick a fridge type and start the guided workflow, or jump straight to the analysis suite. Built-in tutorials are available from the toolbar for both the measurement and analysis sides.
+
+To check segment sweep / HPD on the instrument before a run:
+
+```bash
+python -m tools.pna_segment_hw_test --address TCPIP0::<ip>::inst0::INSTR --fstart <Hz> --fstop <Hz> --power -20
+```
 
 ---
 
@@ -309,7 +328,9 @@ The welcome screen lets you pick a fridge type and start the guided workflow, or
 
 - **A sweep won't stop instantly** — *Stop* is honoured at the end of the current poll cycle (a fraction of a second); the instrument is then placed in a safe state (output reduced, sweep held).
 - **Temperature shows `?mK`** — the fridge temperature couldn't be read; the run still completes and is labelled with the placeholder. Check the fridge connection if you expected a real value.
-- **HPD windows look too narrow** at very low power — the adaptive window scales with the fitted linewidth; if your resonance frequency drifts more than expected, widen the span at the span-selection step.
+- **HPD "noise/radius" warning** — HPD reports the background noise relative to the fitted circle radius at every power. Below ~0.05 HPD gives clearly smaller Qi errors than SPD. Above ~0.1 the circle fit becomes noise-biased (Qi too high), and HPD more so than SPD because few of its points sit at the off-resonant point. When you see the warning, add averaging or lower the IF bandwidth for that power in the schedule.
+- **HPD "segment sweep unavailable" message** — the PNA refused the segment table for that power, so it was measured with a linear sweep (flagged `fallback_spd`). Run `tools/pna_segment_hw_test.py` to see why.
+- **Very high Q at small span** — near fr the HPD spacing cannot go below the PNA's 1 Hz resolution; the density is capped there and the extra points move outward. If the point count does not fit in the span at 1 Hz, reduce points or widen the span.
 - **`check_env.py` reports a missing fitter file** — make sure `circuit.py`, `circlefit.py`, `calibration.py`, and `utilities.py` are present in the project root.
 - **No PyQt5 / VISA on a headless machine** — use **Manual** mode and the analysis suite to work with data offline.
 
@@ -318,7 +339,7 @@ The welcome screen lets you pick a fridge type and start the guided workflow, or
 ## Acknowledgements
 
 - **Circle-fit analysis** is built on the **`resonator_tools`** notch-port fitter by S. Probst *et al.*, which implements the diameter-correction method (DCM) for separating internal and coupling quality factors. See refs. [1] (algebraic circle fit) and [2] (diameter-correction method).
-- The **HPD (high-resolution power dependence)** acquisition mode — concentrating measurement points around the resonance so the fit stays accurate as the linewidth narrows at low power — follows the point-redistribution approach of Baity *et al.* [3], which also sets out the photon-number convention used here.
+- The **HPD (homophasal point distribution)** acquisition mode — redistributing measurement points uniformly around the resonance circle to remove span-dependent fit bias and reduce fit error — follows Baity *et al.* [3], which also sets out the photon-number convention used here.
 - Instrument control is built on **[QCoDeS](https://qcodes.github.io/Qcodes/)** and **qcodes_contrib_drivers**.
 
 ## References

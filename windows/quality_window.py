@@ -14,6 +14,10 @@ Confirm / Ignore / Delete, or Re-measure to sweep it again for a cleaner fit.
               resonator. The saved run stays in the database.
   • Ignore  — keeps the number RESERVED (skipped in power/temperature runs).
 
+Pressing "Run quality sweep" again once every shown resonator already has data
+re-measures all NON-confirmed ones with the current Power / IF bw / Averages /
+Points (after a warning). Confirmed resonators are never touched.
+
 Continue → Power-dependent stays disabled until every resonator is Confirmed or
 Ignored (deleted ones removed), with at least one Confirmed.
 """
@@ -266,9 +270,51 @@ class QualityWindow(QMainWindow):
                 "averages": self.sp_avg.value(), "avg_enabled": self.sp_avg.value() > 1,
                 "points": self.sp_points.value(), "trace": "S21"}
 
+    @staticmethod
+    def _has_data(r) -> bool:
+        return r.get("f_hz") is not None and len(r["f_hz"]) > 0
+
     def _run(self):
-        todo = [r for r in self._visible if r.get("f_hz") is None or not len(r["f_hz"])]
-        self._start_worker(todo, "Running quality sweep…")
+        todo = [r for r in self._visible if not self._has_data(r)]
+        if todo or not self._visible:
+            # normal first pass: only sweep what has no data yet
+            self._start_worker(todo, "Running quality sweep…")
+            return
+
+        # Everything shown already has data → re-measure all NON-confirmed
+        # resonators with the current sweep settings (after a warning).
+        if not instrument_manager.pna_connected():
+            self._log("✗ PNA not connected."); return
+        if instrument_manager.busy:
+            return
+        redo = [r for r in self._visible if r.get("state") != "confirmed"]
+        if not redo:
+            QMessageBox.information(
+                self, "Nothing to re-measure",
+                "Every resonator shown is already Confirmed.\n\n"
+                "To sweep a confirmed resonator again, select it and use Re-measure.")
+            return
+
+        n_ign = sum(1 for r in redo if r.get("state") == "ignored")
+        msg = (f"All resonators already have data.\n\n"
+               f"{len(redo)} non-confirmed resonator(s) will be RE-MEASURED with:\n"
+               f"     Power     = {self.sp_power.value():.2f} dBm\n"
+               f"     IF bw     = {self.sp_ifbw.value()} Hz\n"
+               f"     Averages  = {self.sp_avg.value()}\n"
+               f"     Points    = {self.sp_points.value()}\n\n"
+               f"Their current traces and fits will be replaced "
+               f"(earlier runs stay in the database).\n"
+               f"Confirmed resonators are left untouched.")
+        if n_ign:
+            msg += (f"\n\n{n_ign} of them are currently Ignored — they will be "
+                    f"re-measured too and go back to undecided.")
+        if QMessageBox.warning(self, "Re-measure non-confirmed resonators", msg,
+                               QMessageBox.Ok | QMessageBox.Cancel,
+                               QMessageBox.Cancel) != QMessageBox.Ok:
+            return
+        self._start_worker(
+            redo, f"Re-measuring {len(redo)} non-confirmed resonator(s) at "
+                  f"{self.sp_power.value():.2f} dBm, IF bw {self.sp_ifbw.value()} Hz…")
 
     def _remeasure(self):
         r = self._current()
@@ -294,7 +340,7 @@ class QualityWindow(QMainWindow):
         if instrument_manager.busy:
             return
         if not subset:
-            self._log("Nothing to measure (all resonators already have data)."); return
+            self._log("Nothing to measure."); return
         settings.remember("quality", {
             "assess_power_dbm": self.sp_power.value(), "assess_if_bw": self.sp_ifbw.value(),
             "assess_averages": self.sp_avg.value(), "points": self.sp_points.value()})
@@ -345,7 +391,7 @@ class QualityWindow(QMainWindow):
         self._remeasure_num = None
         instrument_manager.set_busy(False)
         self.btn_run.setEnabled(True); self.btn_stop.setEnabled(False)
-        self._log("■ Stopped. Measured resonators are kept; the rest stay unmeasured.")
+        self._log("■ Stopped. Measured resonators are kept; the rest keep their previous data/state.")
 
     def _on_error(self, tb):
         instrument_manager.set_busy(False)

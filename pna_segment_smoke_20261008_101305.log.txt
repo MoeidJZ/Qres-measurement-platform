@@ -1,0 +1,73 @@
+PNA segment-sweep smoke test  20261008_101305
+window 5.000000–5.010000 GHz, 2001 pts, -30.0 dBm, IFBW 100 Hz, avg 3
+
+[1] Connect
+  PASS  connected: {'vendor': 'Agilent Technologies', 'model': 'N5235A', 'serial': 'MY52251058', 'firmware': 'A.10.47.06'}
+      options: ['080', '216', 'P02']
+      power limits in driver: <Numbers -90<=v<=13>
+      current state: {'start': 6417771426.18, 'stop': 6418071738.97, 'points': 2001, 'if_bandwidth': 200.0, 'trigger_source': 'IMM', 'sweep_type': 'LIN', 'power': -90.0}
+      errors already in the queue before the test (cleared): ['+103,"CALC measurement selection set to none"', '-114,"Header suffix out of range;SOUR:POW3?<NL><Err>"', '-114,"Header suffix out of range;SOUR:POW4?<NL><Err>"', '-114,"Header suffix out of range;SOUR:POW3?<NL><Err>"', '-114,"Header suffix out of range;SOUR:POW4?<NL><Err>"', '+202,"Parameter not valid"', '-114,"Header suffix out of range;SOUR:POW3?<NL><Err>"', '-114,"Header suffix out of range;SOUR:POW4?<NL><Err>"', '-114,"Header suffix out of range;SOUR:POW3?<NL><Err>"', '-114,"Header suffix out of range;SOUR:POW4?<NL><Err>"']
+
+[2] Baseline linear sweep
+  PASS  magnitude/phase have 2001/2001 points (expected 2001); sweep 18.20 s
+  PASS  all values finite (|S21| -130.1 … -76.9 dB, median -86.5 dB)
+  PASS  no SCPI errors
+      (18.4 s)
+
+[3] Segment table in one command (SENS:SEGM:LIST)
+  PASS  SENS:SEGM:LIST accepted (errors: none)
+  PASS  SENS:SEGM:COUN? = 3 (expected 3)
+      read back: [(5000000000.0, 5003333333.0, 21), (5003334333.0, 5006666667.0, 201), (5006667667.0, 5010000000.0, 21)]
+  PASS  table read back matches
+      (0.0 s)
+
+[4] Segment table segment by segment (SENS:SEGMn:...)
+  PASS  per-segment commands accepted (errors: none)
+  PASS  SENS:SEGM:COUN? = 3 (expected 3)
+      read back: [(5000000000.0, 5003333333.0, 21), (5003334333.0, 5006666667.0, 201), (5006667667.0, 5010000000.0, 21)]
+  PASS  table read back matches
+      (0.0 s)
+
+[5] Driver segment sweep: program, sweep, read
+  PASS  sweep type = SEGM
+  PASS  64-bit stimulus = programmed grid (243 pts, max dev 0.5 Hz)
+      info: same axis read in 32-bit would be off by up to 255 Hz
+      info: SENS:SWE:POIN? in segment mode returns 243 (total is 243; the driver does not depend on this)
+  PASS  trace_points = 243
+  PASS  magnitude/phase have 243/243 points (expected 243); sweep 2.37 s
+  PASS  all values finite (|S21| -108.6 … -78.0 dB, median -87.2 dB)
+  PASS  no SCPI errors
+      (2.5 s)
+
+[6] Averaged segment sweep (3 averages)
+  PASS  magnitude/phase have 243/243 points (expected 243); sweep 6.76 s
+  PASS  all values finite (|S21| -121.8 … -82.4 dB, median -91.2 dB)
+  PASS  no SCPI errors
+      (6.8 s)
+
+[7] HPD-style many-segment table
+      HPD-style plan: 66 segments, 2001 points
+      programming + read-back took 0.07 s
+  PASS  stimulus matches plan (2001 pts)
+  PASS  magnitude/phase have 2001/2001 points (expected 2001); sweep 18.11 s
+  PASS  all values finite (|S21| -114.6 … -75.9 dB, median -86.5 dB)
+  PASS  no SCPI errors
+      (18.3 s)
+
+[8] Back to linear sweep
+  PASS  sweep type = LIN
+  PASS  magnitude/phase have 2001/2001 points (expected 2001); sweep 18.21 s
+  PASS  all values finite (|S21| -110.1 … -76.4 dB, median -86.5 dB)
+  PASS  no SCPI errors
+      (18.3 s)
+
+[9] Final instrument state
+  PASS  error queue empty (none)
+  PASS  data format = REAL,+32
+      (0.0 s)
+
+Cleanup: abort, linear sweep, restore settings, minimum power, RF off
+traces saved to pna_segment_smoke_20261008_101305_traces.npz
+
+SUMMARY: 29/29 checks passed
+log: pna_segment_smoke_20261008_101305.log.txt
