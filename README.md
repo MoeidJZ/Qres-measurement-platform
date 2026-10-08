@@ -349,9 +349,3 @@ python -m tools.pna_segment_hw_test --address TCPIP0::<ip>::inst0::INSTR --fstar
 2. M. S. Khalil, M. J. A. Stoutimore, F. C. Wellstood, and K. D. Osborn, "An analysis method for asymmetric resonator transmission applied to superconducting devices," *Journal of Applied Physics* **111**, 054510 (2012). https://doi.org/10.1063/1.3692073
 
 3. P. G. Baity, C. Maclean, V. Seferai, J. Bronstein, Y. Shu, T. Hemakumara, and M. Weides, "Circle fit optimization for resonator quality factor measurements: Point redistribution for maximal accuracy," *Physical Review Research* **6**, 013329 (2024). https://doi.org/10.1103/PhysRevResearch.6.013329
-
----
-
-## License
-
-Add your chosen license here (e.g. MIT) and include a `LICENSE` file in the repository root.
