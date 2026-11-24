@@ -180,12 +180,14 @@ The complex-plane panel plots the **raw** measured S21 together with the simulat
 On-chip power is computed from the VNA power and a (negative) line attenuation. The intra-resonator photon number is obtained directly from the fitted port:
 
 ```
-k_c = 2π·fr / Qc      (coupling rate)
-k_i = 2π·fr / Qi      (internal loss rate)
-n̄   = 4·k_c / ( 2π·ħ·fr·(k_c + k_i)² ) · P_chip
+Qc  = |Qc| / cos(phi)      (real coupling quality factor, diameter-corrected)
+k_c = 2π·fr / Qc           (coupling rate)
+k_i = 2π·fr / Qi           (internal loss rate)
+n̄   = 2·k_c / ( 2π·ħ·fr·(k_c + k_i)² ) · P_chip
+    = 2·Ql² · P_chip / ( ħ·(2π·fr)² · Qc )
 ```
 
-following the standard expression for a notch-coupled resonator (see ref. [3]).
+This is the expression for a notch-coupled resonator in ref. [3], Eq. (E2), n̄ = P_chip·2·Ql²·cos(phi) / (2π·h·fr²·|Qc|).
 
 ---
 
@@ -268,8 +270,8 @@ qres_platform/
 1. **Clone the repository**
 
    ```bash
-   git clone <your-repo-url>
-   cd qres_platform
+   git clone https://github.com/MoeidJZ/Qres-measurement-platform.git
+   cd Qres-measurement-platform
    ```
 
 2. **Create a virtual environment** (recommended)
@@ -349,3 +351,7 @@ python -m tools.pna_segment_hw_test --address TCPIP0::<ip>::inst0::INSTR --fstar
 2. M. S. Khalil, M. J. A. Stoutimore, F. C. Wellstood, and K. D. Osborn, "An analysis method for asymmetric resonator transmission applied to superconducting devices," *Journal of Applied Physics* **111**, 054510 (2012). https://doi.org/10.1063/1.3692073
 
 3. P. G. Baity, C. Maclean, V. Seferai, J. Bronstein, Y. Shu, T. Hemakumara, and M. Weides, "Circle fit optimization for resonator quality factor measurements: Point redistribution for maximal accuracy," *Physical Review Research* **6**, 013329 (2024). https://doi.org/10.1103/PhysRevResearch.6.013329
+
+## License
+
+This project is released under the MIT License. See [`LICENSE`](LICENSE) for the full text.
