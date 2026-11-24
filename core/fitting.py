@@ -206,7 +206,7 @@ def photons_in_resonator(fit: Dict, chip_power_dbm: float) -> float:
         p_w = 1e-3 * 10.0 ** (chip_power_dbm / 10.0)
         k_c = 2 * np.pi * fr / Qc
         k_i = 2 * np.pi * fr / Qi
-        return float(4.0 * k_c / (2 * np.pi * _HBAR * fr * (k_c + k_i) ** 2) * p_w)
+        return float(2.0 * k_c / (2 * np.pi * _HBAR * fr * (k_c + k_i) ** 2) * p_w)
     except Exception:
         return float("nan")
 
