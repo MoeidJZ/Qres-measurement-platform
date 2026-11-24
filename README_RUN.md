@@ -73,4 +73,3 @@ qres_platform/
 - `qcodes_contrib_drivers` brings the Proteox/DECS tooling; if you only use
   Teslatron you still need it installed because the Proteox driver is imported
   lazily (it won't run unless you select Proteox).
-```
